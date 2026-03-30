@@ -156,6 +156,12 @@ Navigate to `http://localhost:8420` in your web browser. Upload your media, hit 
 
 *(Note: If your system doesn't recognize the `graphcut` command, simply prefix it with `python -m graphcut.cli` like `python -m graphcut.cli serve my-awesome-video`!)*
 
+**Corporate Firewalls / VPNs:**
+If you are on a locked-down enterprise laptop that is blocking the automatic FFmpeg bundled download, you can explicitly pass your company's network proxy:
+```bash
+graphcut serve my-awesome-video --proxy http://proxy.corp.local:8080
+```
+
 ## 🏗️ Architecture
 
 Under the hood, GraphCut completely bypasses slow per-frame Python processing (like MoviePy or OpenCV). Instead, it orchestrates complex `FFmpeg` filtergraphs via `subprocess`, delivering maximum bare-metal rendering performance. 

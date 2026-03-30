@@ -78,6 +78,11 @@ class FFmpegExecutor:
                 import urllib.request
                 
                 sys_proxies = urllib.request.getproxies()
+                
+                # Manual CLI override passed from `serve --proxy`
+                manual_override = os.environ.get("GRAPHCUT_HTTP_PROXY")
+                if manual_override:
+                    sys_proxies = {"http": manual_override, "https": manual_override}
 
                 # Corporate Proxy Bypass: Inject Windows Registry web proxies and disable strict MITM SSL
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

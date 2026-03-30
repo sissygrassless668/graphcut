@@ -987,11 +987,16 @@ def set_webcam(project_dir: Path, webcam_file: Path, position: str, scale: float
 @cli.command()
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.option("--port", type=int, default=8420, help="Port to run the UI server on.")
-def serve(project_dir: Path, port: int) -> None:
+@click.option("--proxy", type=str, default=None, help="Force an HTTP proxy for static downloads behind strict firewalls.")
+def serve(project_dir: Path, port: int, proxy: str | None) -> None:
     """Start the GraphCut web GUI editor server."""
+    import os
     import uvicorn
     import webbrowser
     from graphcut.server import create_app
+    
+    if proxy:
+        os.environ["GRAPHCUT_HTTP_PROXY"] = proxy
     
     app = create_app(project_dir)
     
