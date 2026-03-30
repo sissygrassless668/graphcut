@@ -64,8 +64,8 @@ graphcut timeline list my-awesome-video --json
 # Clear and rebuild the timeline as a set of trimmed segments
 graphcut timeline clear my-awesome-video
 
-# Add multiple segments from a single source (repeat --range)
-graphcut timeline add my-awesome-video main_clip --range 12.40:21.05 --range 45.10:58.00 --range 75.00:82.25
+# Add multiple segments from a single source (repeat --range) and apply a fade transition
+graphcut timeline add my-awesome-video main_clip --range 12.40:21.05 --range 45.10:58.00 --transition fade
 
 # Add one more segment using --in/--out
 graphcut timeline add my-awesome-video main_clip --in 95.50 --out 105.25
@@ -75,6 +75,13 @@ graphcut timeline move my-awesome-video 4 2
 graphcut timeline split my-awesome-video 2 50.00
 graphcut timeline trim my-awesome-video 1 --in 0.50 --out 10.00
 graphcut timeline delete my-awesome-video 3
+
+# Apply crossfade or dissolve transitions between clips dynamically
+graphcut timeline transition my-awesome-video 1 xfade --duration 0.6
+graphcut timeline transition my-awesome-video 2 fade
+
+# Discover all built-in transition types and effects
+graphcut effects list
 
 # Review the timeline
 graphcut timeline list my-awesome-video
