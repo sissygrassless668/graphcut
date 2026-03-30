@@ -154,6 +154,94 @@ class FilterGraph:
         self.nodes.append(node)
         return vout
 
+    def volume(self, label: str, gain_db: float) -> str:
+        """Add a volume filter to adjust audio gain in dB."""
+        aout = self._next_a_label()
+        node = FilterNode(
+            filter_name="volume",
+            inputs=[label],
+            outputs=[aout],
+            params={"volume": f"{gain_db}dB"}
+        )
+        self.nodes.append(node)
+        return aout
+
+    def amix(self, labels: list[str], weights: list[float] | None = None) -> str:
+        """Mix multiple audio streams."""
+        aout = self._next_a_label()
+        params: dict[str, Any] = {"inputs": len(labels)}
+        if weights:
+            # e.g., weights="1.0 0.5 0.5"
+            params["weights"] = " ".join(str(w) for w in weights)
+            
+        node = FilterNode(
+            filter_name="amix",
+            inputs=labels,
+            outputs=[aout],
+            params=params
+        )
+        self.nodes.append(node)
+        return aout
+
+    def sidechaincompress(
+        self, main_label: str, sidechain_label: str,
+        threshold: float = 0.02, ratio: float = 8.0, 
+        attack: float = 200.0, release: float = 1000.0
+    ) -> str:
+        """Duck main audio when sidechain audio is active."""
+        aout = self._next_a_label()
+        node = FilterNode(
+            filter_name="sidechaincompress",
+            inputs=[main_label, sidechain_label],
+            outputs=[aout],
+            params={
+                "threshold": threshold,
+                "ratio": ratio,
+                "attack": attack,
+                "release": release,
+            }
+        )
+        self.nodes.append(node)
+        return aout
+
+    def aloop(self, label: str, loop_count: int = -1) -> str:
+        """Loop audio endlessly (or count times). Note: Requires asetpts to fix timestamps."""
+        # [label]aloop=loop=-1:size=2e9[looped]
+        aout = self._next_a_label()
+        node = FilterNode(
+            filter_name="aloop",
+            inputs=[label],
+            outputs=[aout],
+            # Use a large size so it loops the whole file (size is in samples, 2e9 is very large)
+            params={"loop": loop_count, "size": "2147483647"}
+        )
+        self.nodes.append(node)
+        return aout
+
+    def atrim(self, label: str, start: float = 0.0, end: float | None = None) -> str:
+        """Trim audio and reset PTS."""
+        aout = self._next_a_label()
+        params = {"start": start}
+        if end is not None:
+            params["end"] = end
+            
+        # Needs asetpts=PTS-STARTPTS to reset timestamps cleanly
+        def compile_chained() -> str:
+            in_str = "".join(f"[{i}]" for i in node.inputs)
+            out_str = "".join(f"[{o}]" for o in node.outputs)
+            p_str = ":".join(f"{k}={v}" for k, v in params.items())
+            return f"{in_str}atrim={p_str},asetpts=PTS-STARTPTS{out_str}"
+            
+        node = FilterNode(
+            filter_name="atrim",
+            inputs=[label],
+            outputs=[aout],
+            params=params
+        )
+        node.compile = compile_chained # type: ignore
+        self.nodes.append(node)
+        return aout
+
     def compile(self) -> tuple[list[Path], str]:
         """Compile the full graph into input paths and the filter_complex string."""
         graph_str = ";".join(node.compile() for node in self.nodes)

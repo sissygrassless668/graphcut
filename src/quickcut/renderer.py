@@ -9,6 +9,8 @@ from typing import Callable
 from quickcut.ffmpeg_executor import FFmpegExecutor, FFmpegError
 from quickcut.filtergraph import FilterGraph
 from quickcut.models import ProjectManifest
+from quickcut.audio_mixer import AudioMixer
+from quickcut.audio_normalizer import AudioNormalizer
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +133,38 @@ class Renderer:
         if quality == "preview":
             final_v = fg.scale(final_v, width=854, height=480)
 
+        # Calculate total duration for progress and music looping
+        total_duration = 0.0
+        for clip in manifest.clip_order:
+            if clip.trim_start is not None and clip.trim_end is not None:
+                total_duration += (clip.trim_end - clip.trim_start)
+            else:
+                total_duration += manifest.sources[clip.source_id].duration_seconds
+
+        if manifest.transcript_cuts:
+            for cut in manifest.transcript_cuts:
+                total_duration -= (cut["end"] - cut["start"])
+
+        # 4b. Mix Audio
+        mixer = AudioMixer(manifest.audio_mix)
+        source_lbls = [final_a]
+        
+        narr_lbl = None
+        if manifest.narration and manifest.narration in input_indices:
+            idx = input_indices[manifest.narration]
+            narr_lbl = fg.atrim(f"{idx}:a", start=0.0, end=total_duration)
+
+        music_lbl = None
+        if manifest.music and manifest.music in input_indices:
+            idx = input_indices[manifest.music]
+            music_lbl = mixer._apply_music_loop(fg, f"{idx}:a", total_duration)
+
+        final_a = mixer.build_audio_graph(
+            fg, source_labels=source_lbls, 
+            narration_label=narr_lbl, 
+            music_label=music_lbl
+        )
+
         # 5. Compile FilterGraph
         inputs, graph_str = fg.compile()
         fg.debug_print()
@@ -160,20 +194,25 @@ class Renderer:
         ])
 
         # 7. Execute
-        # Calculate total duration for progress
-        total_duration = 0.0
-        for clip in manifest.clip_order:
-            if clip.trim_start is not None and clip.trim_end is not None:
-                total_duration += (clip.trim_end - clip.trim_start)
-            else:
-                total_duration += manifest.sources[clip.source_id].duration_seconds
-
         logger.info("Starting render to %s using %s", output_path, encoder)
         self.executor.run(
             args=cmd,
             progress_callback=progress_callback,
             duration=total_duration
         )
+
+        # 8. Normalize output audio if configured
+        if manifest.audio_mix.normalize:
+            norm = AudioNormalizer(self.executor)
+            out_tmp = output_path.with_name(f"{output_path.stem}_norm{output_path.suffix}")
+            norm.normalize(
+                input_path=output_path,
+                output_path=out_tmp,
+                target_lufs=manifest.audio_mix.target_lufs,
+                true_peak=-1.0, # Slight headroom to prevent inter-sample clipping
+            )
+            # Replace original with normalized
+            out_tmp.replace(output_path)
 
         return output_path
 

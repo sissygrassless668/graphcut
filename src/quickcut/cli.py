@@ -299,6 +299,104 @@ def remove_silences(project_dir: Path, min_duration: float, preview: bool) -> No
         raise click.Abort()
 
 
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--duration", type=float, default=None, help="Recording duration in seconds.")
+@click.option("--device", type=str, default=None, help="Input device name/ID.")
+def record_voiceover(project_dir: Path, duration: float | None, device: str | None) -> None:
+    """Record a voice-over and add it to the project."""
+    from quickcut.voice_recorder import VoiceRecorder
+    from quickcut.models import MediaInfo
+
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        
+        # Determine output path
+        source_id = f"voiceover_{len(manifest.sources) + 1}"
+        out_name = f"{source_id}.wav"
+        out_path = project_dir / "sources" / out_name
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        recorder = VoiceRecorder()
+        recorder.record_voiceover(
+            output_path=out_path,
+            duration=duration,
+            device=device,
+        )
+        
+        if out_path.exists():
+            # Quick probe for duration
+            from quickcut.media_prober import probe_file
+            info = probe_file(out_path)
+            
+            manifest.sources[source_id] = info
+            manifest.narration = source_id
+            ProjectManager.save_project(manifest, project_dir)
+            
+            console.print(f"[bold green]Voice-over saved and set as narration ({source_id}).[/bold green]")
+        else:
+            console.print("[bold red]Recording failed (no output file created).[/bold red]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--source-gain", type=float, help="Primary source audio gain (dB).")
+@click.option("--narration-gain", type=float, help="Narration gain (dB).")
+@click.option("--music-gain", type=float, help="Music track gain (dB).")
+@click.option("--ducking", type=float, help="Ducking strength (0.0 to 1.0).")
+@click.option("--normalize/--no-normalize", default=None, help="Enable/disable EBU R128 loudness normalization.")
+def set_audio(
+    project_dir: Path, 
+    source_gain: float | None,
+    narration_gain: float | None,
+    music_gain: float | None,
+    ducking: float | None,
+    normalize: bool | None,
+) -> None:
+    """Configure audio mixing settings like gain and ducking."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        mix = manifest.audio_mix
+        
+        if source_gain is not None:
+            mix.source_gain_db = source_gain
+        if narration_gain is not None:
+            mix.narration_gain_db = narration_gain
+        if music_gain is not None:
+            mix.music_gain_db = music_gain
+        if ducking is not None:
+            if not 0.0 <= ducking <= 1.0:
+                raise click.BadParameter("Ducking must be between 0.0 and 1.0")
+            mix.ducking_strength = ducking
+        if normalize is not None:
+            mix.normalize = normalize
+            
+        ProjectManager.save_project(manifest, project_dir)
+        console.print("[bold green]Audio config updated.[/bold green]")
+        
+        # Display current config
+        table = Table(title="Audio Mix Config")
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="yellow")
+        
+        table.add_row("Source Gain", f"{mix.source_gain_db} dB")
+        table.add_row("Narration Gain", f"{mix.narration_gain_db} dB")
+        table.add_row("Music Gain", f"{mix.music_gain_db} dB")
+        table.add_row("Ducking Strength", f"{mix.ducking_strength}")
+        table.add_row("EBU R128 Normalize", str(mix.normalize))
+        table.add_row("Target LUFS", f"{mix.target_lufs}")
+        
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
 if __name__ == "__main__":
     cli()
 
