@@ -126,15 +126,12 @@ GraphCut isn't just a CLI script. It features a full, decoupled native Web UI de
 
 ## 🛠️ Installation
 
-**Prerequisites:** You must have Python 3.11+ and `ffmpeg` / `ffprobe` installed on your system's `PATH`.
+**Prerequisites:** You must have Python 3.11+ installed. (Note: `ffmpeg` is automatically bundled via `static-ffmpeg` so you don't even need admin rights on Windows!)
 
 ```bash
 # Clone the repository
 git clone https://github.com/colleybrb/graphcut.git
 cd graphcut
-
-# Minimal install (Core FFmpeg bindings)
-pip install -e .
 
 # Full suite install (Includes Local AI Whisper transcription & Scene Detection)
 pip install -e ".[all]"
@@ -156,6 +153,8 @@ graphcut serve my-awesome-video
 ```
 
 Navigate to `http://localhost:8420` in your web browser. Upload your media, hit **Generate Transcript**, delete the words you don't want, and click **Export** to render YouTube, TikTok, and Reels formats simultaneously!
+
+*(Note: If your system doesn't recognize the `graphcut` command, simply prefix it with `python -m graphcut.cli` like `python -m graphcut.cli serve my-awesome-video`!)*
 
 ## 🏗️ Architecture
 
