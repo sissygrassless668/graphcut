@@ -1,5 +1,6 @@
 """Click commands for the GraphCut editor."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -9,12 +10,38 @@ from rich.table import Table
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
 
 from graphcut.media_prober import probe_files
+from graphcut.models import ClipRef, SceneConfig
 from graphcut.project_manager import ProjectManager
 from graphcut.renderer import Renderer
 from graphcut.exporter import Exporter
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+def _manifest_json(manifest) -> dict:
+    # Uses Pydantic's JSON rendering so Paths/DateTimes become strings.
+    return json.loads(manifest.model_dump_json())
+
+
+def _parse_ranges(range_specs: tuple[str, ...]) -> list[tuple[float, float]]:
+    out: list[tuple[float, float]] = []
+    for spec in range_specs:
+        if not spec:
+            continue
+        parts = spec.split(":")
+        if len(parts) != 2:
+            raise click.BadParameter(f"Invalid range '{spec}'. Expected START:END (seconds).")
+        try:
+            start = float(parts[0])
+            end = float(parts[1])
+        except ValueError as e:
+            raise click.BadParameter(f"Invalid range '{spec}'. START/END must be numbers.") from e
+        if start < 0 or end < 0:
+            raise click.BadParameter(f"Invalid range '{spec}'. START/END must be >= 0.")
+        if end <= start:
+            raise click.BadParameter(f"Invalid range '{spec}'. END must be > START.")
+        out.append((start, end))
+    return out
 
 
 @click.group()
@@ -31,6 +58,393 @@ def cli(verbose: bool) -> None:
     # Note: Using rich for CLI outputs, keeping basicConfig simple
     if verbose:
         logger.debug("Debug logging enabled")
+
+@cli.command("sources")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def sources_cmd(project_dir: Path, as_json: bool) -> None:
+    """List project sources."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        if as_json:
+            console.print_json(json.dumps(_manifest_json(manifest).get("sources", {})))
+            return
+
+        table = Table(title=f"Sources ({manifest.name})")
+        table.add_column("Source ID", style="cyan")
+        table.add_column("Type", style="green")
+        table.add_column("Duration", style="yellow")
+        table.add_column("Resolution", style="magenta")
+        table.add_column("Path", style="dim")
+
+        for sid, info in manifest.sources.items():
+            res_str = f"{info.width}x{info.height}" if info.width and info.height else "N/A"
+            dur_str = f"{info.duration_seconds:.2f}s" if info.duration_seconds else "N/A"
+            table.add_row(sid, info.media_type, dur_str, res_str, str(info.file_path))
+
+        console.print(table)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.group()
+def timeline() -> None:
+    """Timeline editing commands (agent-friendly)."""
+
+
+@timeline.command("list")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def timeline_list(project_dir: Path, as_json: bool) -> None:
+    """List timeline clips with trims."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        if as_json:
+            console.print_json(json.dumps(_manifest_json(manifest).get("clip_order", [])))
+            return
+
+        table = Table(title=f"Timeline ({manifest.name})")
+        table.add_column("#", style="dim", justify="right")
+        table.add_column("Source", style="cyan")
+        table.add_column("In", style="green", justify="right")
+        table.add_column("Out", style="green", justify="right")
+        table.add_column("Dur", style="yellow", justify="right")
+        table.add_column("Transition", style="magenta")
+
+        for i, clip in enumerate(manifest.clip_order, start=1):
+            info = manifest.sources.get(clip.source_id)
+            full = info.duration_seconds if info else 0.0
+            t0 = clip.trim_start if clip.trim_start is not None else 0.0
+            t1 = clip.trim_end if clip.trim_end is not None else full
+            dur = max(0.0, t1 - t0)
+            table.add_row(
+                str(i),
+                clip.source_id,
+                f"{t0:.2f}",
+                f"{t1:.2f}" if t1 else "0.00",
+                f"{dur:.2f}",
+                f"{clip.transition} ({clip.transition_duration:.2f}s)",
+            )
+
+        console.print(table)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@timeline.command("add")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("source_id")
+@click.option("--in", "trim_in", type=float, default=None, help="Trim start (seconds).")
+@click.option("--out", "trim_out", type=float, default=None, help="Trim end (seconds).")
+@click.option("--range", "ranges", multiple=True, help="Add multiple segments as START:END (repeatable).")
+@click.option("--pos", type=int, default=None, help="Insert position (1-based). Default: append.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def timeline_add(
+    project_dir: Path,
+    source_id: str,
+    trim_in: float | None,
+    trim_out: float | None,
+    ranges: tuple[str, ...],
+    pos: int | None,
+    as_json: bool,
+) -> None:
+    """Add one or more trimmed segments to the timeline."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        if source_id not in manifest.sources:
+            raise click.BadParameter(f"Unknown source_id: {source_id}")
+
+        info = manifest.sources[source_id]
+        full = info.duration_seconds
+
+        segments = _parse_ranges(ranges) if ranges else []
+        if not segments:
+            t0 = 0.0 if trim_in is None else float(trim_in)
+            t1 = full if trim_out is None else float(trim_out)
+            if t0 < 0 or t1 < 0:
+                raise click.BadParameter("--in/--out must be >= 0.")
+            if t1 <= t0:
+                raise click.BadParameter("--out must be > --in.")
+            segments = [(t0, t1)]
+
+        insert_at = len(manifest.clip_order) if pos is None else max(0, min(len(manifest.clip_order), pos - 1))
+        for (t0, t1) in segments:
+            if full and t1 > full:
+                t1 = full
+            if t0 > t1:
+                continue
+            manifest.clip_order.insert(insert_at, ClipRef(source_id=source_id, trim_start=t0, trim_end=t1))
+            insert_at += 1
+
+        ProjectManager.save_project(manifest, project_dir)
+        if as_json:
+            console.print_json(json.dumps(_manifest_json(manifest).get("clip_order", [])))
+        else:
+            console.print(f"[bold green]Added {len(segments)} segment(s) for[/bold green] {source_id}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@timeline.command("trim")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("index", type=int)
+@click.option("--in", "trim_in", type=float, default=None, help="Trim start (seconds).")
+@click.option("--out", "trim_out", type=float, default=None, help="Trim end (seconds).")
+@click.option("--reset", is_flag=True, help="Reset trim to full duration.")
+def timeline_trim(project_dir: Path, index: int, trim_in: float | None, trim_out: float | None, reset: bool) -> None:
+    """Update trims for a timeline clip (index is 1-based)."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        i = index - 1
+        if i < 0 or i >= len(manifest.clip_order):
+            raise click.BadParameter("Invalid clip index.")
+
+        clip = manifest.clip_order[i]
+        info = manifest.sources.get(clip.source_id)
+        full = info.duration_seconds if info else 0.0
+
+        if reset:
+            clip.trim_start = None
+            clip.trim_end = None
+        else:
+            t0 = (clip.trim_start if clip.trim_start is not None else 0.0) if trim_in is None else float(trim_in)
+            t1 = (clip.trim_end if clip.trim_end is not None else full) if trim_out is None else float(trim_out)
+            if t0 < 0 or t1 < 0:
+                raise click.BadParameter("--in/--out must be >= 0.")
+            if t1 <= t0:
+                raise click.BadParameter("--out must be > --in.")
+            clip.trim_start = t0
+            clip.trim_end = t1
+
+        manifest.clip_order[i] = clip
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(f"[bold green]Trim updated for clip[/bold green] #{index}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@timeline.command("split")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("index", type=int)
+@click.argument("time", type=float)
+def timeline_split(project_dir: Path, index: int, time: float) -> None:
+    """Split a clip into two at TIME (seconds, in source timeline; index is 1-based)."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        i = index - 1
+        if i < 0 or i >= len(manifest.clip_order):
+            raise click.BadParameter("Invalid clip index.")
+
+        clip = manifest.clip_order[i]
+        info = manifest.sources.get(clip.source_id)
+        if not info:
+            raise click.BadParameter("Missing source info for clip.")
+
+        t0 = clip.trim_start if clip.trim_start is not None else 0.0
+        t1 = clip.trim_end if clip.trim_end is not None else info.duration_seconds
+        t = float(time)
+        if t <= t0 or t >= t1:
+            raise click.BadParameter("Split time must be within the current clip trim range.")
+
+        left = ClipRef(**clip.model_dump())
+        right = ClipRef(**clip.model_dump())
+        left.trim_end = t
+        right.trim_start = t
+        right.trim_end = clip.trim_end
+
+        manifest.clip_order[i] = left
+        manifest.clip_order.insert(i + 1, right)
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(f"[bold green]Split clip[/bold green] #{index} at {t:.2f}s")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@timeline.command("move")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("from_index", type=int)
+@click.argument("to_index", type=int)
+def timeline_move(project_dir: Path, from_index: int, to_index: int) -> None:
+    """Move a clip (indices are 1-based)."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        n = len(manifest.clip_order)
+        src = from_index - 1
+        dst = to_index - 1
+        if src < 0 or src >= n or dst < 0 or dst >= n:
+            raise click.BadParameter("Invalid indices.")
+        clip = manifest.clip_order.pop(src)
+        manifest.clip_order.insert(dst, clip)
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(f"[bold green]Moved clip[/bold green] #{from_index} -> #{to_index}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@timeline.command("delete")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("index", type=int)
+def timeline_delete(project_dir: Path, index: int) -> None:
+    """Delete a clip from the timeline (index is 1-based)."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        i = index - 1
+        if i < 0 or i >= len(manifest.clip_order):
+            raise click.BadParameter("Invalid clip index.")
+        manifest.clip_order.pop(i)
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(f"[bold green]Deleted clip[/bold green] #{index}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@timeline.command("clear")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+def timeline_clear(project_dir: Path) -> None:
+    """Clear the timeline."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        manifest.clip_order = []
+        ProjectManager.save_project(manifest, project_dir)
+        console.print("[bold green]Cleared timeline.[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("roles")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--narration", default=None, help="Source ID to use as narration.")
+@click.option("--music", default=None, help="Source ID to use as music.")
+def roles_cmd(project_dir: Path, narration: str | None, music: str | None) -> None:
+    """Set narration/music roles for audio mixing."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        if narration is not None and narration != "" and narration not in manifest.sources:
+            raise click.BadParameter(f"Unknown narration source: {narration}")
+        if music is not None and music != "" and music not in manifest.sources:
+            raise click.BadParameter(f"Unknown music source: {music}")
+        manifest.narration = narration or None
+        manifest.music = music or None
+        ProjectManager.save_project(manifest, project_dir)
+        console.print("[bold green]Roles updated.[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.group("scene")
+def scene_group() -> None:
+    """Scene snapshot commands (OBS-like)."""
+
+
+@scene_group.command("list")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def scene_list(project_dir: Path, as_json: bool) -> None:
+    """List saved scenes."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        if as_json:
+            console.print_json(json.dumps({"active_scene": manifest.active_scene, "scenes": _manifest_json(manifest).get("scenes", {})}))
+            return
+        table = Table(title=f"Scenes ({manifest.name})")
+        table.add_column("Name", style="cyan")
+        table.add_column("Active", style="green")
+        table.add_column("Webcam", style="magenta")
+        table.add_column("Narration", style="yellow")
+        table.add_column("Music", style="yellow")
+        table.add_column("Captions", style="blue")
+        for name, sc in manifest.scenes.items():
+            table.add_row(
+                name,
+                "yes" if manifest.active_scene == name else "",
+                sc.webcam.source_id if sc.webcam else "off",
+                sc.narration or "",
+                sc.music or "",
+                sc.caption_style.style if sc.caption_style else "",
+            )
+        console.print(table)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@scene_group.command("save")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("name")
+def scene_save(project_dir: Path, name: str) -> None:
+    """Save current webcam/audio/captions/roles as a named scene."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        nm = name.strip()
+        if not nm:
+            raise click.BadParameter("Scene name cannot be empty.")
+        manifest.scenes[nm] = SceneConfig(
+            webcam=manifest.webcam,
+            audio_mix=manifest.audio_mix,
+            caption_style=manifest.caption_style,
+            narration=manifest.narration,
+            music=manifest.music,
+        )
+        if manifest.active_scene is None:
+            manifest.active_scene = nm
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(f"[bold green]Saved scene:[/bold green] {nm}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@scene_group.command("activate")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("name")
+def scene_activate(project_dir: Path, name: str) -> None:
+    """Activate a scene (applies webcam/audio/captions/roles)."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        nm = name.strip()
+        if nm not in manifest.scenes:
+            raise click.BadParameter(f"Scene not found: {nm}")
+        sc = manifest.scenes[nm]
+        manifest.active_scene = nm
+        manifest.webcam = sc.webcam
+        manifest.audio_mix = sc.audio_mix
+        manifest.caption_style = sc.caption_style
+        manifest.narration = sc.narration
+        manifest.music = sc.music
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(f"[bold green]Activated scene:[/bold green] {nm}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@scene_group.command("delete")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("name")
+def scene_delete(project_dir: Path, name: str) -> None:
+    """Delete a saved scene."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        nm = name.strip()
+        if nm not in manifest.scenes:
+            raise click.BadParameter(f"Scene not found: {nm}")
+        del manifest.scenes[nm]
+        if manifest.active_scene == nm:
+            manifest.active_scene = None
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(f"[bold green]Deleted scene:[/bold green] {nm}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
 
 
 @cli.command()
@@ -590,4 +1004,3 @@ def serve(project_dir: Path, port: int) -> None:
 
 if __name__ == "__main__":
     cli()
-

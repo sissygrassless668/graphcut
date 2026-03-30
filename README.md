@@ -39,6 +39,69 @@ Instead of wrestling with headless browsers or proprietary GUI scripting, an AI 
 
 Zero GUI required. You can completely automate your video pipeline—letting your locally running LLMs assemble, narrate, and polish YouTube or TikTok clips while you sleep!
 
+### Agent-Friendly CLI (Recommended)
+
+GraphCut includes a set of timeline commands designed for automation and AI agents.
+
+Key ideas:
+* `sources` and `timeline list` can emit machine-readable JSON (`--json`)
+* timeline indices are **1-based**
+* multi-trim assembly is done by adding many segments from one source via repeatable `--range START:END`
+
+#### Inspect Inputs (JSON)
+
+```bash
+# List sources (machine-readable)
+graphcut sources my-awesome-video --json
+
+# List timeline clips (machine-readable)
+graphcut timeline list my-awesome-video --json
+```
+
+#### Build a Multi-Trim Timeline
+
+```bash
+# Clear and rebuild the timeline as a set of trimmed segments
+graphcut timeline clear my-awesome-video
+
+# Add multiple segments from a single source (repeat --range)
+graphcut timeline add my-awesome-video main_clip --range 12.40:21.05 --range 45.10:58.00 --range 75.00:82.25
+
+# Add one more segment using --in/--out
+graphcut timeline add my-awesome-video main_clip --in 95.50 --out 105.25
+
+# Move / split / trim / delete
+graphcut timeline move my-awesome-video 4 2
+graphcut timeline split my-awesome-video 2 50.00
+graphcut timeline trim my-awesome-video 1 --in 0.50 --out 10.00
+graphcut timeline delete my-awesome-video 3
+
+# Review the timeline
+graphcut timeline list my-awesome-video
+```
+
+#### Set Roles (Narration/Music) and Scenes
+
+```bash
+# Assign audio roles (source IDs must exist)
+graphcut roles my-awesome-video --narration voiceover_1 --music background_audio
+
+# Save/activate scene snapshots (webcam/audio/captions/roles)
+graphcut scene save my-awesome-video TalkingHead
+graphcut scene activate my-awesome-video TalkingHead
+graphcut scene list my-awesome-video
+```
+
+#### Render / Export
+
+```bash
+# Fast local preview
+graphcut render-preview my-awesome-video
+
+# Export to a preset
+graphcut export my-awesome-video --preset YouTube --quality final
+```
+
 ### Example Agent Actions
 
 ```bash
@@ -46,7 +109,7 @@ Zero GUI required. You can completely automate your video pipeline—letting you
 graphcut transcribe my-awesome-video
 
 # Automatically chop out all dead-air silence from the timeline
-graphcut remove-silences my-awesome-video --threshold -35dB
+graphcut remove-silences my-awesome-video --min-duration 1.0
 
 # Configure a picture-in-picture webcam overlay over the main footage
 graphcut set-webcam my-awesome-video face_cam.mp4 --position bottom-right
