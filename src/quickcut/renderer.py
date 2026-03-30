@@ -8,9 +8,11 @@ from typing import Callable
 
 from quickcut.ffmpeg_executor import FFmpegExecutor, FFmpegError
 from quickcut.filtergraph import FilterGraph
-from quickcut.models import ProjectManifest
+from quickcut.models import ProjectManifest, Transcript
 from quickcut.audio_mixer import AudioMixer
 from quickcut.audio_normalizer import AudioNormalizer
+from quickcut.overlay_compositor import OverlayCompositor
+from quickcut.caption_generator import CaptionGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -129,11 +131,67 @@ class Renderer:
             # Needs concat
             final_v, final_a = fg.concat(processed_pairs, n=len(processed_pairs))
 
-        # 4. Handle Preview Quality (Scale)
-        if quality == "preview":
-            final_v = fg.scale(final_v, width=854, height=480)
+        # 4. Handle Overlays (Webcam, Watermark)
+        compositor = OverlayCompositor()
+        
+        # We need base dimensions for proportional scaling
+        base_w, base_h = 1920, 1080
+        if len(manifest.clip_order) > 0:
+            first_src = manifest.sources[manifest.clip_order[0].source_id]
+            base_w = first_src.width or 1920
+            base_h = first_src.height or 1080
+            
+        if manifest.webcam and manifest.webcam.source_id in input_indices:
+            idx = input_indices[manifest.webcam.source_id]
+            final_v = compositor.add_webcam_overlay(
+                fg, 
+                base_label=f"[{final_v}]", 
+                webcam_input_idx=idx, 
+                config=manifest.webcam,
+                base_width=base_w,
+                base_height=base_h
+            )
 
-        # Calculate total duration for progress and music looping
+        # 5. Handle Preview Quality (Scale)
+        if quality == "preview":
+            final_v = fg.scale(f"[{final_v}]" if not final_v.startswith("[") and not manifest.webcam else final_v, width=854, height=480)
+
+        # 6. Add Captions (Burn-in)
+        # Assuming we check if there's a cached transcript mapped to the primary source
+        from quickcut.transcriber import Transcriber
+        try:
+            if manifest.clip_order:
+                main_src_id = manifest.clip_order[0].source_id
+                main_src = manifest.sources[main_src_id]
+                transcript_path = project_dir / ".cache" / "transcripts" / f"{main_src.file_hash}_medium.json"
+                if transcript_path.exists():
+                    with open(transcript_path) as f:
+                        t_data = f.read()
+                    transcript = Transcript.model_validate_json(t_data)
+                    
+                    cg = CaptionGenerator(manifest.caption_style)
+                    ass_path = project_dir / ".cache" / "transcripts" / f"{main_src.file_hash}_burn.ass"
+                    cg.to_ass(transcript, ass_path)
+                    
+                    captions_filter_str = cg.burn_in_filter(ass_path)
+                    
+                    # Add to FilterGraph
+                    cap_out = fg._next_v_label()
+                    fg.nodes.append(
+                        __import__("quickcut.filtergraph", fromlist=["FilterNode"]).FilterNode(
+                            filter_name=captions_filter_str,
+                            inputs=[f"[{final_v}]" if not final_v.startswith("[") else final_v.strip("[]")],
+                            outputs=[cap_out]
+                        )
+                    )
+                    final_v = cap_out
+                    logger.info("Added caption burn-in node to filtergraph.")
+        except Exception as e:
+            logger.warning("Failed to setup caption burn-in: %s", e)
+
+        # 7. Compile final FilterGraph
+        inputs, graph_str = fg.compile()
+        fg.debug_print()
         total_duration = 0.0
         for clip in manifest.clip_order:
             if clip.trim_start is not None and clip.trim_end is not None:

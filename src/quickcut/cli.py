@@ -397,6 +397,95 @@ def set_audio(
         raise click.Abort()
 
 
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--format", "fmt", type=click.Choice(["srt", "vtt", "both"]), default="both", help="Export format.")
+@click.option("--style", type=click.Choice(["clean", "social"]), default=None, help="Burning caption style.")
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Output directory for subtitles.")
+def export_captions(project_dir: Path, fmt: str, style: str | None, output_dir: Path | None) -> None:
+    """Generate caption files (SRT/VTT) from project transcripts."""
+    from quickcut.caption_generator import CaptionGenerator
+    from quickcut.models import Transcript
+    
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        if style:
+            manifest.caption_style.style = style
+            ProjectManager.save_project(manifest, project_dir)
+            
+        cg = CaptionGenerator(manifest.caption_style)
+        out_path = output_dir or (project_dir / "build")
+        out_path.mkdir(parents=True, exist_ok=True)
+        
+        # Determine primary audio transcript
+        primary = None
+        for source_id in manifest.sources:
+            t_path = project_dir / ".cache" / "transcripts" / f"{manifest.sources[source_id].file_hash}_medium.json"
+            if t_path.exists():
+                primary = t_path
+                break
+                
+        if not primary:
+            console.print("[bold red]No transcripts found. Run `transcribe` first.[/bold red]")
+            return
+            
+        with open(primary) as f:
+            transcript = Transcript.model_validate_json(f.read())
+            
+        if fmt in ("srt", "both"):
+            srt_path = out_path / f"{transcript.source_id}.srt"
+            cg.to_srt(transcript, srt_path)
+            console.print(f"[bold green]Exported SRT -> [cyan]{srt_path}[/cyan][/bold green]")
+            
+        if fmt in ("vtt", "both"):
+            vtt_path = out_path / f"{transcript.source_id}.vtt"
+            cg.to_vtt(transcript, vtt_path)
+            console.print(f"[bold green]Exported VTT -> [cyan]{vtt_path}[/cyan][/bold green]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("webcam_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--position", type=click.Choice(["bottom-right", "bottom-left", "top-right", "top-left", "side-by-side"]), default="bottom-right")
+@click.option("--scale", type=float, default=0.25, help="Scale relative to base video width.")
+@click.option("--border", type=int, default=2, help="Border width in pixels.")
+def set_webcam(project_dir: Path, webcam_file: Path, position: str, scale: float, border: int) -> None:
+    """Configure webcam picture-in-picture overlay."""
+    from quickcut.models import WebcamOverlay
+    
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        source_id = "webcam"
+        
+        # Ensure media is inside project directory
+        dest_path = project_dir / "sources" / webcam_file.name
+        if not dest_path.exists() and webcam_file.absolute() != dest_path.absolute():
+            import shutil
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(webcam_file, dest_path)
+            
+        from quickcut.media_prober import probe_file
+        manifest.sources[source_id] = probe_file(dest_path)
+        
+        manifest.webcam = WebcamOverlay(
+            source_id=source_id,
+            position=position,
+            scale=scale,
+            border_width=border
+        )
+        
+        ProjectManager.save_project(manifest, project_dir)
+        console.print("[bold green]Webcam overlay configured and bound to project.[/bold green]")
+        
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
 if __name__ == "__main__":
     cli()
 

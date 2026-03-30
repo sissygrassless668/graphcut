@@ -242,6 +242,22 @@ class FilterGraph:
         self.nodes.append(node)
         return aout
 
+    def overlay(self, base_label: str, overlay_label: str, x: str, y: str, enable: str | None = None) -> str:
+        """Add an overlay filter at a specific position."""
+        vout = self._next_v_label()
+        params = {"x": x, "y": y}
+        if enable:
+            params["enable"] = enable
+            
+        node = FilterNode(
+            filter_name="overlay",
+            inputs=[base_label, overlay_label],
+            outputs=[vout],
+            params=params
+        )
+        self.nodes.append(node)
+        return vout
+
     def compile(self) -> tuple[list[Path], str]:
         """Compile the full graph into input paths and the filter_complex string."""
         graph_str = ";".join(node.compile() for node in self.nodes)
