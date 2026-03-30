@@ -172,3 +172,15 @@ GraphCut is licensed under the **Fair Source License**.
 The codebase is completely open, transparent, and **free for any personal, educational, or non-commercial usage indefinitely.** If you use GraphCut to produce content that generates revenue over a certain threshold, or deploy it within a corporate environment, please see [LICENSE.md](LICENSE.md) for commercial licensing requirements.
 
 **Love the project? Please consider leaving a ⭐ on GitHub!**
+
+## 🔧 Troubleshooting
+
+**"graphcut: command not found"**
+
+If you run `graphcut` and your terminal says it is not recognized, check the following:
+1. **Watch your spelling:** Make sure you are typing `graphcut`, not `grphacut`.
+2. **Python PATH Issues:** Depending on your OS, `pip install` might place executables in a folder that isn't on your system's `$PATH` (like `~/.local/bin` on Linux/Mac, or `C:\Users\Name\AppData\Local\Programs\Python\Scripts` on Windows). You'll need to add that directory to your PATH variable.
+3. **Alternative Execution:** If you can't get your path configured, you can always execute the python module directly from within the cloned directory by running:
+   ```bash
+   python -m graphcut.cli new-project my-video
+   ```
