@@ -13,6 +13,7 @@ from graphcut.audio_mixer import AudioMixer
 from graphcut.audio_normalizer import AudioNormalizer
 from graphcut.overlay_compositor import OverlayCompositor
 from graphcut.caption_generator import CaptionGenerator
+from graphcut.transcript_editor import TranscriptEditor
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +24,110 @@ class Renderer:
     def __init__(self, executor: FFmpegExecutor | None = None) -> None:
         self.executor = executor or FFmpegExecutor()
 
+    @staticmethod
+    def _resolve_transcript_cuts(
+        manifest: ProjectManifest,
+        project_dir: Path | None,
+        model_name: str = "medium",
+    ) -> list[dict]:
+        """Return merged global time ranges for transcript cuts.
+
+        Supports mixed cut formats in `manifest.transcript_cuts`:
+        - {"start": float, "end": float} interpreted as global timeline seconds
+        - {"source_id": str, "word_index": int} interpreted as word deletions per-source,
+          converted to local time ranges via cached transcript JSON, then mapped to global time.
+        """
+        if not manifest.transcript_cuts:
+            return []
+
+        global_ranges: list[dict] = []
+        word_indices_by_source: dict[str, list[int]] = {}
+
+        for cut in manifest.transcript_cuts:
+            if not isinstance(cut, dict):
+                continue
+            if "start" in cut and "end" in cut:
+                try:
+                    s = float(cut["start"])
+                    e = float(cut["end"])
+                except (TypeError, ValueError):
+                    continue
+                if e > s:
+                    global_ranges.append({"start": s, "end": e})
+                continue
+
+            sid = cut.get("source_id")
+            idx = cut.get("word_index")
+            if isinstance(sid, str) and isinstance(idx, int):
+                word_indices_by_source.setdefault(sid, []).append(idx)
+
+        if project_dir is None or not word_indices_by_source:
+            return TranscriptEditor._merge_ranges(global_ranges)
+
+        # Precompute each clip's global offset based on trims (before any cuts are applied).
+        clip_offsets: list[float] = []
+        offset = 0.0
+        for clip in manifest.clip_order:
+            info = manifest.sources.get(clip.source_id)
+            if not info:
+                clip_offsets.append(offset)
+                continue
+            t_start = clip.trim_start if clip.trim_start is not None else 0.0
+            t_end = clip.trim_end if clip.trim_end is not None else info.duration_seconds
+            clip_offsets.append(offset)
+            offset += max(0.0, t_end - t_start)
+
+        # Convert word indices -> local time ranges -> global time ranges.
+        for source_id, indices in word_indices_by_source.items():
+            info = manifest.sources.get(source_id)
+            if not info:
+                continue
+            tp = project_dir / ".cache" / "transcripts" / f"{info.file_hash}_{model_name}.json"
+            if not tp.exists():
+                continue
+
+            try:
+                transcript = Transcript.model_validate_json(tp.read_text())
+            except Exception:
+                continue
+
+            local_ranges = TranscriptEditor.delete_words(transcript, indices)
+            if not local_ranges:
+                continue
+
+            # Apply to every occurrence of the source in the timeline.
+            for clip_i, clip in enumerate(manifest.clip_order):
+                if clip.source_id != source_id:
+                    continue
+                t_start = clip.trim_start if clip.trim_start is not None else 0.0
+                t_end = clip.trim_end if clip.trim_end is not None else info.duration_seconds
+                base = clip_offsets[clip_i]
+
+                for r in local_ranges:
+                    try:
+                        rs = float(r["start"])
+                        re = float(r["end"])
+                    except (TypeError, ValueError, KeyError):
+                        continue
+
+                    # Intersect with trimmed region.
+                    s = max(rs, t_start)
+                    e = min(re, t_end)
+                    if e <= s:
+                        continue
+
+                    global_ranges.append({
+                        "start": round(base + (s - t_start), 3),
+                        "end": round(base + (e - t_start), 3),
+                    })
+
+        return TranscriptEditor._merge_ranges(global_ranges)
+
     def render(
         self,
         manifest: ProjectManifest,
         output_path: Path,
+        project_dir: Path | None = None,
         quality: str = "final",
         progress_callback: Callable[[float, str, str], None] | None = None,
         export_filter_hook: Callable[[FilterGraph, str], str] | None = None,
@@ -37,6 +138,7 @@ class Renderer:
         Args:
             manifest: The GraphCut project manifest.
             output_path: Destination path for the rendered video.
+            project_dir: Project directory (used for caches like transcripts/captions).
             quality: Render quality preset ('draft', 'preview', 'final').
             progress_callback: Optional callable for real-time progress.
             export_filter_hook: Optional intercept to attach dynamic overlay scaling constraints via filtergraph string modification.
@@ -51,6 +153,8 @@ class Renderer:
         """
         if not manifest.clip_order:
             raise ValueError("No clips in the project to render.")
+
+        global_cuts = self._resolve_transcript_cuts(manifest, project_dir)
 
         fg = FilterGraph()
         
@@ -80,7 +184,7 @@ class Renderer:
             processed_pairs.append((v_out, a_out))
 
         # 2b. Apply transcript_cuts — split segments around cut ranges
-        if manifest.transcript_cuts:
+        if global_cuts:
             cut_pairs: list[tuple[str, str]] = []
             # Calculate global timeline position for each clip
             timeline_pos = 0.0
@@ -97,7 +201,7 @@ class Renderer:
 
                 # Collect local cut points (relative to clip start)
                 local_cuts: list[tuple[float, float]] = []
-                for cut in manifest.transcript_cuts:
+                for cut in global_cuts:
                     cut_s = cut["start"]
                     cut_e = cut["end"]
                     # Check overlap with this clip's global range
@@ -162,9 +266,8 @@ class Renderer:
 
         # 6. Add Captions (Burn-in)
         # Assuming we check if there's a cached transcript mapped to the primary source
-        from graphcut.transcriber import Transcriber
         try:
-            if manifest.clip_order:
+            if project_dir and manifest.clip_order:
                 main_src_id = manifest.clip_order[0].source_id
                 main_src = manifest.sources[main_src_id]
                 transcript_path = project_dir / ".cache" / "transcripts" / f"{main_src.file_hash}_medium.json"
@@ -203,8 +306,8 @@ class Renderer:
             else:
                 total_duration += manifest.sources[clip.source_id].duration_seconds
 
-        if manifest.transcript_cuts:
-            for cut in manifest.transcript_cuts:
+        if global_cuts:
+            for cut in global_cuts:
                 total_duration -= (cut["end"] - cut["start"])
 
         # 4b. Mix Audio
@@ -294,11 +397,11 @@ class Renderer:
         build_dir = project_dir / manifest.build_dir
         build_dir.mkdir(parents=True, exist_ok=True)
         output = build_dir / "preview.mp4"
-        return self.render(manifest, output, quality="preview")
+        return self.render(manifest, output, project_dir=project_dir, quality="preview")
 
     def render_final(self, manifest: ProjectManifest, project_dir: Path) -> Path:
         """Render a full-quality export to the build directory."""
         build_dir = project_dir / manifest.build_dir
         build_dir.mkdir(parents=True, exist_ok=True)
         output = build_dir / "final.mp4"
-        return self.render(manifest, output, quality="final")
+        return self.render(manifest, output, project_dir=project_dir, quality="final")

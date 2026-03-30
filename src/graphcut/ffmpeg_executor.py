@@ -16,9 +16,16 @@ logger = logging.getLogger(__name__)
 class FFmpegError(Exception):
     """Raised when an FFmpeg command fails."""
 
-    def __init__(self, message: str, returncode: int = 1, stderr: str = "") -> None:
+    def __init__(
+        self,
+        message: str,
+        returncode: int = 1,
+        stderr: str = "",
+        cmd: list[str] | None = None,
+    ) -> None:
         self.returncode = returncode
         self.stderr = stderr
+        self.cmd = cmd
         super().__init__(message)
 
 
@@ -214,6 +221,7 @@ class FFmpegExecutor:
                 f"FFmpeg failed: {result.stderr.strip()[-500:]}",
                 returncode=result.returncode,
                 stderr=result.stderr,
+                cmd=cmd,
             )
 
         return result
@@ -276,6 +284,7 @@ class FFmpegExecutor:
                 f"FFmpeg failed: {stderr.strip()[-500:]}",
                 returncode=process.returncode,
                 stderr=stderr,
+                cmd=cmd,
             )
 
         callback(100.0, "0.0", "00:00")

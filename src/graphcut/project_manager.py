@@ -120,18 +120,34 @@ class ProjectManager:
         return source_id
 
     @staticmethod
-    def remove_source(manifest: ProjectManifest, source_id: str) -> None:
+    def remove_source(
+        manifest: ProjectManifest,
+        source_id: str,
+        delete_file: bool = False,
+        project_dir: Path | None = None,
+    ) -> bool:
         """Remove a source from the manifest and all its clip references.
 
         Args:
             manifest: The manifest to update.
             source_id: The ID of the source to remove.
+            delete_file: If True, also delete the underlying media file.
+            project_dir: Required when delete_file=True to scope safe deletion.
 
         Raises:
             ValueError: If the source_id doesn't exist.
+
+        Returns:
+            True if a source file was deleted from disk, False otherwise.
         """
         if source_id not in manifest.sources:
             raise ValueError(f"Source '{source_id}' not found in project sources")
+        if delete_file and project_dir is None:
+            raise ValueError("project_dir must be provided when delete_file=True")
+
+        source_info = manifest.sources[source_id]
+        source_path = source_info.file_path.resolve()
+        file_deleted = False
 
         logger.info("Removing source %s", source_id)
         del manifest.sources[source_id]
@@ -148,6 +164,32 @@ class ProjectManager:
             manifest.music = None
         if manifest.webcam and manifest.webcam.source_id == source_id:
             manifest.webcam = None
+
+        if delete_file:
+            project_root = project_dir.resolve()
+            if not source_path.exists() or not source_path.is_file():
+                return False
+
+            if not source_path.is_relative_to(project_root):
+                logger.warning(
+                    "Skipped deleting file outside project directory: %s",
+                    source_path,
+                )
+                return False
+
+            still_referenced = any(
+                info.file_path.resolve() == source_path
+                for info in manifest.sources.values()
+            )
+            if still_referenced:
+                logger.info("Skipped deleting shared file still referenced: %s", source_path)
+                return False
+
+            source_path.unlink(missing_ok=True)
+            file_deleted = True
+            logger.info("Deleted source file: %s", source_path)
+
+        return file_deleted
 
     @staticmethod
     def add_to_clip_order(

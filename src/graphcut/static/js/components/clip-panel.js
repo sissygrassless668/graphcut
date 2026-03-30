@@ -2,7 +2,7 @@ export class ClipPanel {
     constructor(app) {
         this.app = app;
         this.container = document.getElementById('clip-list');
-        this.dragSrcEl = null;
+        this._saveTimers = new Map(); // per-index debounce
     }
 
     render() {
@@ -16,79 +16,122 @@ export class ClipPanel {
 
             const el = document.createElement('div');
             el.className = 'media-item';
-            el.draggable = true;
             el.dataset.index = index;
 
-            let durStr = '?s';
-            if (clip.end_time_seconds) {
-                durStr = (clip.end_time_seconds - (clip.start_time_seconds || 0)).toFixed(1) + 's';
-            } else if (info.duration_seconds) {
-                durStr = info.duration_seconds.toFixed(1) + 's';
-            }
+            const fullDur = Number(info.duration_seconds || 0);
+            const tStart = clip.trim_start ?? 0;
+            const tEnd = clip.trim_end ?? (fullDur || 0);
+            const clipDur = Math.max(0, (tEnd || 0) - (tStart || 0));
+            const durStr = fullDur ? `${clipDur.toFixed(2)}s (of ${fullDur.toFixed(2)}s)` : `${clipDur.toFixed(2)}s`;
 
             el.innerHTML = `
                 <div style="font-size:0.8rem;color:var(--text-muted);font-weight:bold">${index + 1}</div>
                 ${info.thumbnail ? `<img src="${info.thumbnail}" class="thumbnail" />` : `<div class="thumbnail"></div>`}
-                <div class="media-info">
-                    <div class="media-name">${sid}</div>
+                <div class="media-info" style="flex:1; overflow:hidden;">
+                    <div class="media-name" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${sid}">${sid}</div>
                     <div class="media-meta">${durStr}</div>
+                    <div style="display:flex; gap: 6px; margin-top: 6px; align-items:center;">
+                        <label style="font-size:0.75rem;color:var(--text-muted);">In</label>
+                        <input type="number" class="form-control" data-trim-start="${index}" min="0" step="0.05" value="${Number(tStart).toFixed(2)}" style="width: 86px; padding: 4px 6px; font-size: 0.8rem;">
+                        <label style="font-size:0.75rem;color:var(--text-muted);">Out</label>
+                        <input type="number" class="form-control" data-trim-end="${index}" min="0" step="0.05" value="${Number(tEnd).toFixed(2)}" style="width: 86px; padding: 4px 6px; font-size: 0.8rem;">
+                        <button class="btn btn-sm btn-outline" data-trim-reset="${index}" title="Reset trim">Reset</button>
+                    </div>
                 </div>
-                <button class="btn btn-sm btn-icon btn-remove" data-index="${index}">x</button>
+                <div style="display:flex; flex-direction:column; gap: 6px;">
+                    <button class="btn btn-sm btn-outline" data-move-up="${index}" title="Move Up">↑</button>
+                    <button class="btn btn-sm btn-outline" data-move-down="${index}" title="Move Down">↓</button>
+                    <button class="btn btn-sm btn-outline" data-trim-open="${index}" title="Trim With Preview">Trim</button>
+                    <button class="btn btn-sm btn-outline" data-dup="${index}" title="Duplicate Segment">Dup</button>
+                    <button class="btn btn-sm btn-outline" data-split="${index}" title="Split Segment">Split</button>
+                    <button class="btn btn-sm btn-icon btn-remove" data-index="${index}" title="Remove clip">x</button>
+                </div>
             `;
 
-            // Drag behaviors
-            el.addEventListener('dragstart', (e) => this.dragStart(e));
-            el.addEventListener('dragover', (e) => this.dragOver(e));
-            el.addEventListener('drop', (e) => this.drop(e));
-            el.addEventListener('dragenter', (e) => e.target.closest('.media-item')?.classList.add('drag-over'));
-            el.addEventListener('dragleave', (e) => e.target.closest('.media-item')?.classList.remove('drag-over'));
-
             el.querySelector('.btn-remove').addEventListener('click', async () => {
-                // Mock deletion by re-saving without index
-                const newOrder = [...this.app.state.clips];
-                newOrder.splice(index, 1);
-                await this.app.api.reorderClips(newOrder.map((_, i) => i)); // Assuming API handles direct payload replacement if indices mapped
-                this.app.refreshState();
+                try {
+                    await this.app.api.deleteClip(index);
+                    this.app.refreshState();
+                } catch (err) {
+                    alert(err.message || 'Failed to remove clip.');
+                }
+            });
+
+            const startEl = el.querySelector(`[data-trim-start="${index}"]`);
+            const endEl = el.querySelector(`[data-trim-end="${index}"]`);
+            const resetEl = el.querySelector(`[data-trim-reset="${index}"]`);
+
+            const clamp = (v) => {
+                const n = Number(v);
+                if (!Number.isFinite(n)) return 0;
+                if (fullDur > 0) return Math.max(0, Math.min(fullDur, n));
+                return Math.max(0, n);
+            };
+
+            const scheduleSave = () => {
+                const key = String(index);
+                const existing = this._saveTimers.get(key);
+                if (existing) clearTimeout(existing);
+                this._saveTimers.set(key, setTimeout(async () => {
+                    try {
+                        const nextStart = clamp(startEl?.value);
+                        const nextEnd = clamp(endEl?.value);
+                        await this.app.api.updateClip(index, {
+                            trim_start: nextStart,
+                            trim_end: nextEnd
+                        });
+                        this.app.refreshState();
+                    } catch (err) {
+                        alert(err.message || 'Failed to update trim.');
+                    }
+                }, 300));
+            };
+
+            startEl?.addEventListener('input', scheduleSave);
+            endEl?.addEventListener('input', scheduleSave);
+            resetEl?.addEventListener('click', async () => {
+                try {
+                    await this.app.api.updateClip(index, { trim_start: null, trim_end: null });
+                    this.app.refreshState();
+                } catch (err) {
+                    alert(err.message || 'Failed to reset trim.');
+                }
+            });
+
+            el.querySelector(`[data-trim-open="${index}"]`)?.addEventListener('click', () => {
+                this.app.components?.trimModal?.openForClip(index);
+            });
+            el.querySelector(`[data-split="${index}"]`)?.addEventListener('click', () => {
+                this.app.components?.trimModal?.openSplit(index);
+            });
+            el.querySelector(`[data-dup="${index}"]`)?.addEventListener('click', async () => {
+                try {
+                    await this.app.api.duplicateClip(index);
+                    this.app.refreshState();
+                } catch (err) {
+                    alert(err.message || 'Failed to duplicate clip.');
+                }
+            });
+            el.querySelector(`[data-move-up="${index}"]`)?.addEventListener('click', async () => {
+                if (index <= 0) return;
+                try {
+                    await this.app.api.moveClip(index, index - 1);
+                    this.app.refreshState();
+                } catch (err) {
+                    alert(err.message || 'Failed to move clip.');
+                }
+            });
+            el.querySelector(`[data-move-down="${index}"]`)?.addEventListener('click', async () => {
+                if (index >= (this.app.state.clips.length - 1)) return;
+                try {
+                    await this.app.api.moveClip(index, index + 1);
+                    this.app.refreshState();
+                } catch (err) {
+                    alert(err.message || 'Failed to move clip.');
+                }
             });
 
             this.container.appendChild(el);
         });
-    }
-
-    dragStart(e) {
-        this.dragSrcEl = e.currentTarget;
-        e.dataTransfer.effectAllowed = 'move';
-        e.dataTransfer.setData('text/plain', this.dragSrcEl.dataset.index);
-    }
-
-    dragOver(e) {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        return false;
-    }
-
-    async drop(e) {
-        e.stopPropagation();
-        e.preventDefault();
-        
-        const target = e.currentTarget;
-        target.classList.remove('drag-over');
-
-        if (this.dragSrcEl !== target) {
-            const dragIndex = parseInt(this.dragSrcEl.dataset.index);
-            const dropIndex = parseInt(target.dataset.index);
-            
-            // Generate basic new list by swapping array pos
-            const current = [...this.app.state.clips];
-            const item = current.splice(dragIndex, 1)[0];
-            current.splice(dropIndex, 0, item);
-            
-            // Map the old indices to new layout simply sending raw arrays. 
-            // The API expects indices.
-            const newIndices = current.map(x => this.app.state.clips.indexOf(x));
-            
-            await this.app.api.reorderClips(newIndices);
-            this.app.refreshState();
-        }
     }
 }

@@ -126,6 +126,16 @@ class ExportPreset(BaseModel):
     audio_bitrate: str = "192k"
 
 
+class SceneConfig(BaseModel):
+    """OBS-like scene snapshot (overlay + audio + captions + roles)."""
+
+    webcam: WebcamOverlay | None = None
+    audio_mix: AudioMix = Field(default_factory=AudioMix)
+    caption_style: CaptionStyle = Field(default_factory=CaptionStyle)
+    narration: str | None = None  # source_id
+    music: str | None = None  # source_id
+
+
 # Default presets for common social platforms
 DEFAULT_EXPORT_PRESETS: list[ExportPreset] = [
     ExportPreset(
@@ -183,6 +193,8 @@ class ProjectManifest(BaseModel):
     export_presets: list[ExportPreset] = Field(
         default_factory=lambda: list(DEFAULT_EXPORT_PRESETS)
     )
+    scenes: dict[str, SceneConfig] = Field(default_factory=dict)
+    active_scene: str | None = None
     transcript_cuts: list[dict] = Field(default_factory=list)
     build_dir: str = "build"
 

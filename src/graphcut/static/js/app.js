@@ -4,7 +4,10 @@ import { ClipPanel } from './components/clip-panel.js';
 import { TranscriptPanel } from './components/transcript-panel.js';
 import { PreviewPanel } from './components/preview-panel.js';
 import { AudioPanel } from './components/audio-panel.js';
+import { OverlaysPanel } from './components/overlays-panel.js';
+import { ScenesPanel } from './components/scenes-panel.js';
 import { ExportPanel } from './components/export-panel.js';
+import { TrimModal } from './components/trim-modal.js';
 
 class App {
     constructor() {
@@ -20,23 +23,34 @@ class App {
             activeJob: null
         };
         this.components = {};
+        this.progress = {
+            container: null,
+            fill: null,
+            label: null,
+            eta: null,
+            hideTimer: null
+        };
     }
 
     async init() {
-        // Setup Progress tracking natively inside GUI state bounding WS configs dynamically
-        const progressEl = document.getElementById('global-progress');
-        const fillEl = document.getElementById('progress-fill');
-        const textEl = document.getElementById('progress-label');
-        const etaEl = document.getElementById('progress-eta');
+        this.progress.container = document.getElementById('global-progress');
+        this.progress.fill = document.getElementById('progress-fill');
+        this.progress.label = document.getElementById('progress-label');
+        this.progress.eta = document.getElementById('progress-eta');
 
         this.api.connectProgressStream((data) => {
-            progressEl.style.display = 'flex';
-            fillEl.style.width = `${data.progress}%`;
-            textEl.textContent = `Rendering [${data.job_id}]... ${Math.round(data.progress)}%`;
-            etaEl.textContent = `ETA: ${data.eta}`;
-            
-            if (data.progress >= 100) {
-                setTimeout(() => { progressEl.style.display = 'none'; }, 2000);
+            this.updateProgress({
+                action: data.action || 'Working',
+                progress: data.progress ?? 0,
+                eta: data.eta || '--:--',
+                speed: data.speed || '0.0'
+            });
+
+            if ((data.progress ?? 0) >= 100) {
+                const action = (data.action || '').toLowerCase();
+                const hideDelay = action.includes('failed') ? 8000 : 1500;
+                this.hideProgress(hideDelay);
+                window.dispatchEvent(new CustomEvent('graphcut:job-complete', { detail: data }));
             }
         });
 
@@ -46,7 +60,10 @@ class App {
         this.components.transcript = new TranscriptPanel(this);
         this.components.preview = new PreviewPanel(this);
         this.components.audio = new AudioPanel(this);
+        this.components.overlays = new OverlaysPanel(this);
+        this.components.scenes = new ScenesPanel(this);
         this.components.export = new ExportPanel(this);
+        this.components.trimModal = new TrimModal(this);
         
         await this.refreshState();
         this.bindTabNavigation();
@@ -99,6 +116,43 @@ class App {
                 document.getElementById(`tab-${target}`).classList.add('active');
             });
         });
+    }
+
+    updateProgress({ action = 'Working', progress = 0, eta = '--:--', speed = '0.0' } = {}) {
+        if (!this.progress.container || !this.progress.fill || !this.progress.label || !this.progress.eta) {
+            return;
+        }
+        if (this.progress.hideTimer) {
+            clearTimeout(this.progress.hideTimer);
+            this.progress.hideTimer = null;
+        }
+
+        const pct = Math.max(0, Math.min(100, Number(progress) || 0));
+        this.progress.container.style.display = 'flex';
+        this.progress.fill.style.width = `${pct}%`;
+        this.progress.label.textContent = `${action}: ${pct.toFixed(1)}%`;
+        this.progress.eta.textContent = `ETA: ${eta} | Speed: ${speed}`;
+    }
+
+    hideProgress(delayMs = 0) {
+        if (!this.progress.container) return;
+        if (this.progress.hideTimer) {
+            clearTimeout(this.progress.hideTimer);
+            this.progress.hideTimer = null;
+        }
+        const hide = () => {
+            if (this.progress.container) {
+                this.progress.container.style.display = 'none';
+            }
+            if (this.progress.fill) {
+                this.progress.fill.style.width = '0%';
+            }
+        };
+        if (delayMs > 0) {
+            this.progress.hideTimer = setTimeout(hide, delayMs);
+            return;
+        }
+        hide();
     }
 }
 

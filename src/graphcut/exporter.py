@@ -26,7 +26,8 @@ class Exporter:
         manifest: ProjectManifest,
         preset: ExportPreset,
         output_dir: Path,
-        progress_callback: Callable[[float, str, str], None] | None = None
+        progress_callback: Callable[[float, str, str], None] | None = None,
+        project_dir: Path | None = None,
     ) -> Path:
         """Export the project to a specific format preset."""
         output_path = output_dir / f"{manifest.name}_{preset.name}.mp4"
@@ -50,14 +51,24 @@ class Exporter:
         # Let's pass the preset parameters down to Renderer via new arguments, or we handle the string.
         # It's cleaner to have Exporter build the aspect ratio string and inject it into Renderer.
         
-        return self._render_with_preset(manifest, preset, output_path, progress_callback)
+        if project_dir is None and output_dir.name == manifest.build_dir:
+            project_dir = output_dir.parent
+
+        return self._render_with_preset(
+            manifest,
+            preset,
+            output_path,
+            progress_callback,
+            project_dir=project_dir,
+        )
 
     def _render_with_preset(
         self,
         manifest: ProjectManifest,
         preset: ExportPreset,
         output_path: Path,
-        progress_callback: Callable[[float, str, str], None] | None = None
+        progress_callback: Callable[[float, str, str], None] | None = None,
+        project_dir: Path | None = None,
     ) -> Path:
         """Internal render invocation adapting the Preset bounds onto the renderer's logic."""
         
@@ -99,6 +110,7 @@ class Exporter:
         return self.renderer.render(
             manifest, 
             output_path, 
+            project_dir=project_dir,
             quality=preset.quality,
             export_filter_hook=ar_filter,
             encoder_args_override=encoder_args,
@@ -110,13 +122,23 @@ class Exporter:
         manifest: ProjectManifest,
         output_dir: Path,
         presets: list[ExportPreset] | None = None,
-        progress_callback: Callable[[float, str, str], None] | None = None
+        progress_callback: Callable[[float, str, str], None] | None = None,
+        project_dir: Path | None = None,
     ) -> list[Path]:
         """Export to all provided presets sequentially."""
+        if project_dir is None and output_dir.name == manifest.build_dir:
+            project_dir = output_dir.parent
+
         presets = presets or manifest.export_presets
         results = []
         for p in presets:
-            res = self.export(manifest, p, output_dir, progress_callback)
+            res = self.export(
+                manifest,
+                p,
+                output_dir,
+                progress_callback,
+                project_dir=project_dir,
+            )
             results.append(res)
             
         return results

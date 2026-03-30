@@ -72,6 +72,7 @@
             <div class="tabs">
                 <button class="tab-btn active" data-tab="audio">Audio</button>
                 <button class="tab-btn" data-tab="overlays">Overlays</button>
+                <button class="tab-btn" data-tab="scenes">Scenes</button>
                 <button class="tab-btn" data-tab="export">Export</button>
             </div>
             
@@ -80,25 +81,11 @@
             </div>
             
             <div class="tab-content" id="tab-overlays">
-                <div class="form-group">
-                    <label>Webcam Source</label>
-                    <select id="webcam-source-select" class="form-control">
-                        <option value="">None</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Position</label>
-                    <select id="webcam-position" class="form-control">
-                        <option value="bottom-right">Bottom Right</option>
-                        <option value="bottom-left">Bottom Left</option>
-                        <option value="top-right">Top Right</option>
-                        <option value="top-left">Top Left</option>
-                    </select>
-                </div>
-                <div class="form-group">
-                    <label>Scale factor</label>
-                    <input type="range" id="webcam-scale" min="0.1" max="0.5" step="0.05" value="0.25">
-                </div>
+                <!-- Overlays injected here -->
+            </div>
+
+            <div class="tab-content" id="tab-scenes">
+                <!-- Scenes injected here -->
             </div>
             
             <div class="tab-content" id="tab-export">
@@ -119,6 +106,17 @@
             <div class="progress-eta" id="progress-eta">ETA: --:--</div>
         </div>
     </footer>
+
+    <div class="modal-root" id="trim-modal-root" style="display:none;">
+        <div class="modal-backdrop" data-modal-close="1"></div>
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title" id="trim-modal-title">Trim</div>
+                <button class="btn btn-sm btn-icon" id="trim-modal-close" title="Close">&times;</button>
+            </div>
+            <div class="modal-body" id="trim-modal-body"></div>
+        </div>
+    </div>
 
     <!-- Modules -->
     <script type="module" src="/js/api.js"></script>
