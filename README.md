@@ -39,6 +39,22 @@ Instead of wrestling with headless browsers or proprietary GUI scripting, an AI 
 
 Zero GUI required. You can completely automate your video pipeline—letting your locally running LLMs assemble, narrate, and polish YouTube or TikTok clips while you sleep!
 
+### Example Agent Actions
+
+```bash
+# Automatically transcribe speech and burn-in subtitles
+graphcut transcribe my-awesome-video
+
+# Automatically chop out all dead-air silence from the timeline
+graphcut remove-silences my-awesome-video --threshold -35dB
+
+# Configure a picture-in-picture webcam overlay over the main footage
+graphcut set-webcam my-awesome-video face_cam.mp4 --position bottom-right
+
+# Generate a fast draft preview 
+graphcut render-preview my-awesome-video
+```
+
 ## 📸 Interactive Web GUI
 
 GraphCut isn't just a CLI script. It features a full, decoupled native Web UI designed to edit video from the browser without the lag.
