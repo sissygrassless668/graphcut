@@ -142,7 +142,42 @@ class FilterGraph:
         self.nodes.append(node)
         return aout
 
-    def scale(self, label: str, width: int, height: int) -> str:
+    def pad(self, label: str, width: int | str, height: int | str, x: str = "(ow-iw)/2", y: str = "(oh-ih)/2", color: str = "black") -> str:
+        """Add a pad filter (often used for letterboxing)."""
+        vout = self._next_v_label()
+        node = FilterNode(
+            filter_name="pad",
+            inputs=[label],
+            outputs=[vout],
+            params={
+                "w": width,
+                "h": height,
+                "x": x,
+                "y": y,
+                "color": color
+            }
+        )
+        self.nodes.append(node)
+        return vout
+
+    def crop_center(self, label: str, width: int | str, height: int | str) -> str:
+        """Add a crop filter centered on the input."""
+        vout = self._next_v_label()
+        node = FilterNode(
+            filter_name="crop",
+            inputs=[label],
+            outputs=[vout],
+            params={
+                "w": width,
+                "h": height,
+                "x": "(in_w-out_w)/2",
+                "y": "(in_h-out_h)/2"
+            }
+        )
+        self.nodes.append(node)
+        return vout
+
+    def scale(self, label: str, width: int | str, height: int | str) -> str:
         """Add a scale filter."""
         vout = self._next_v_label()
         node = FilterNode(

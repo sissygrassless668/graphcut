@@ -28,7 +28,9 @@ class Renderer:
         manifest: ProjectManifest,
         output_path: Path,
         quality: str = "final",
-        progress_callback: Callable[[float], None] | None = None,
+        progress_callback: Callable[[float, str, str], None] | None = None,
+        export_filter_hook: Callable[[FilterGraph, str], str] | None = None,
+        encoder_args_override: list[str] | None = None,
     ) -> Path:
         """Render a project manifest to an MP4 file.
         
@@ -36,7 +38,9 @@ class Renderer:
             manifest: The QuickCut project manifest.
             output_path: Destination path for the rendered video.
             quality: Render quality preset ('draft', 'preview', 'final').
-            progress_callback: Optional callable for real-time progress (0-100).
+            progress_callback: Optional callable for real-time progress.
+            export_filter_hook: Optional intercept to attach dynamic overlay scaling constraints via filtergraph string modification.
+            encoder_args_override: Optional list replacing final video outputs commands formatting mapping.
             
         Returns:
             The path to the rendered output.
@@ -223,11 +227,15 @@ class Renderer:
             music_label=music_lbl
         )
 
-        # 5. Compile FilterGraph
+        # 6. Apply Export Filter Hook
+        if export_filter_hook:
+            final_v = export_filter_hook(fg, final_v)
+
+        # 7. Compile final FilterGraph
         inputs, graph_str = fg.compile()
         fg.debug_print()
-
-        # 6. Build command
+        
+        # 8. Build command
         encoder = self.executor.get_best_encoder()
         cmd = []
         for inp in inputs:
@@ -237,17 +245,24 @@ class Renderer:
             "-filter_complex", graph_str,
             "-map", f"[{final_v}]",
             "-map", f"[{final_a}]",
-            "-c:v", encoder,
         ])
         
-        if quality == "preview":
-            cmd.extend(["-preset", "fast", "-crf", "28"])
+        if encoder_args_override:
+            cmd.extend(encoder_args_override)
         else:
-            cmd.extend(["-preset", "medium", "-crf", "23"])
-
+            cmd.append("-c:v")
+            cmd.append(encoder)
+            if quality == "preview":
+                cmd.extend(["-preset", "fast", "-crf", "28"])
+            else:
+                cmd.extend(["-preset", "medium", "-crf", "23"])
+            
+            cmd.extend([
+                "-c:a", "aac",
+                "-b:a", "192k"
+            ])
+            
         cmd.extend([
-            "-c:a", "aac",
-            "-b:a", "192k",
             "-y", str(output_path)
         ])
 

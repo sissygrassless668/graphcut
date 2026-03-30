@@ -6,10 +6,12 @@ from pathlib import Path
 import click
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
 
 from quickcut.media_prober import probe_files
 from quickcut.project_manager import ProjectManager
 from quickcut.renderer import Renderer
+from quickcut.exporter import Exporter
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -164,21 +166,103 @@ def render_preview(project_dir: Path) -> None:
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
 @click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default="final", help="Render quality.")
 @click.option("--output", type=click.Path(file_okay=True, dir_okay=False, path_type=Path), help="Specific output filename.")
-def render(project_dir: Path, quality: str, output: Path | None) -> None:
+@click.option("--preset", type=str, help="Specific preset name to render (e.g. youtube, shorts, square).")
+@click.option("--all-presets", is_flag=True, help="Render to all defined presets.")
+def render(project_dir: Path, quality: str, output: Path | None, preset: str | None, all_presets: bool) -> None:
     """Render the project to a video file."""
+    # We delegate to export under the hood, but retain `render` for legacy tests.
     try:
         manifest = ProjectManager.load_project(project_dir)
-        renderer = Renderer()
+        exporter = Exporter()
+        out_path = output.parent if output else (project_dir / manifest.build_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
         
-        out_path = output or (project_dir / manifest.build_dir / f"{quality}.mp4")
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        console.print(f"Rendering '{manifest.name}' (quality: {quality})...")
-        final_path = renderer.render(manifest, out_path, quality=quality)
-        console.print(f"[bold green]Success![/bold green] Video rendered to: {final_path}")
-        
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("ETA: {task.fields[eta]}"),
+            TextColumn("Speed: {task.fields[speed]}x"),
+            console=console
+        ) as progress:
+            task = progress.add_task(f"Rendering {manifest.name}", total=100.0, speed="0.0", eta="--:--")
+            
+            def cb(pct: float, speed: str, eta: str):
+                progress.update(task, completed=pct, speed=speed, eta=eta)
+                
+            if all_presets:
+                exporter.export_all(manifest, out_path, progress_callback=cb)
+            elif preset:
+                p = next((x for x in manifest.export_presets if x.name.lower() == preset.lower()), None)
+                if not p:
+                    raise click.BadParameter(f"Preset {preset} not found.")
+                # apply quality
+                p.quality = quality
+                exporter.export(manifest, p, out_path, progress_callback=cb)
+            else:
+                # Fallback to direct renderer via default configuration 
+                # (1080p native bounds, final quality) just using renderer directly.
+                renderer = Renderer()
+                renderer.render(manifest, output or (out_path / f"{quality}.mp4"), quality=quality, progress_callback=cb)
+                
     except Exception as e:
         console.print(f"[bold red]Render failed:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--preset", type=str, help="Specific preset name to render (e.g. youtube, shorts).")
+@click.option("--all", "export_all", is_flag=True, help="Render to all defined presets.")
+@click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default=None, help="Override preset quality.")
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), help="Output directory.")
+def export(project_dir: Path, preset: str | None, export_all: bool, quality: str | None, output_dir: Path | None) -> None:
+    """Export the project across social formats with HW acceleration and progress reporting."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        exporter = Exporter()
+        out_path = output_dir or (project_dir / manifest.build_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        
+        # Override qualities if set
+        if quality:
+            for p in manifest.export_presets:
+                p.quality = quality
+                
+        targets = []
+        if export_all:
+            targets = manifest.export_presets
+        elif preset:
+            p = next((x for x in manifest.export_presets if x.name.lower() == preset.lower()), None)
+            if not p:
+                raise click.BadParameter(f"Preset {preset} not found. Available: {[x.name for x in manifest.export_presets]}")
+            targets.append(p)
+        else:
+            targets = [manifest.export_presets[0]] # Default to first (YouTube usually)
+
+        for target in targets:
+            console.print(f"\n[bold cyan]Exporting {target.name}[/bold cyan] ({target.width}x{target.height}, {target.quality})")
+            
+            with Progress(
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+                TextColumn("ETA: {task.fields[eta]}"),
+                TextColumn("Speed: {task.fields[speed]}x"),
+                console=console
+            ) as progress:
+                
+                ptask = progress.add_task("Processing...", total=100.0, speed="0.0", eta="--:--")
+                
+                def pcb(pct: float, spd: str, rem: str):
+                    progress.update(ptask, completed=pct, speed=spd, eta=rem)
+                    
+                final_path = exporter.export(manifest, target, out_path, progress_callback=pcb)
+
+            console.print(f"[bold green]✓ Done:[/bold green] {final_path}")
+            
+    except Exception as e:
+        console.print(f"[bold red]Export failed:[/bold red] {e}")
         raise click.Abort()
 
 

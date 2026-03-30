@@ -171,7 +171,7 @@ class FFmpegExecutor:
     def run(
         self,
         args: list[str],
-        progress_callback: Callable[[float], None] | None = None,
+        progress_callback: Callable[[float, str, str], None] | None = None,
         duration: float | None = None,
         timeout: int | None = None,
     ) -> subprocess.CompletedProcess[str]:
@@ -221,7 +221,7 @@ class FFmpegExecutor:
     def _run_with_progress(
         self,
         cmd: list[str],
-        callback: Callable[[float], None],
+        callback: Callable[[float, str, str], None],
         duration: float,
         timeout: int | None,
     ) -> subprocess.CompletedProcess[str]:
@@ -238,17 +238,30 @@ class FFmpegExecutor:
 
         stderr_lines: list[str] = []
         time_pattern = re.compile(r"time=(\d+):(\d+):(\d+)\.(\d+)")
+        speed_pattern = re.compile(r"speed=\s*([\d.]+)x")
 
         try:
             assert process.stderr is not None
             for line in process.stderr:
                 stderr_lines.append(line)
-                match = time_pattern.search(line)
-                if match:
-                    hours, mins, secs, centis = (int(g) for g in match.groups())
+                time_match = time_pattern.search(line)
+                speed_match = speed_pattern.search(line)
+                
+                speed = speed_match.group(1) if speed_match else "0.0"
+                
+                if time_match:
+                    hours, mins, secs, centis = (int(g) for g in time_match.groups())
                     current = hours * 3600 + mins * 60 + secs + centis / 100
                     progress = min(100.0, (current / duration) * 100)
-                    callback(progress)
+                    
+                    eta = "Unknown"
+                    spd = float(speed)
+                    if spd > 0.0:
+                        rem_sec = (duration - current) / spd
+                        m, s = divmod(int(rem_sec), 60)
+                        eta = f"{m:02d}:{s:02d}"
+                        
+                    callback(progress, speed, eta)
 
             process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -265,7 +278,7 @@ class FFmpegExecutor:
                 stderr=stderr,
             )
 
-        callback(100.0)
+        callback(100.0, "0.0", "00:00")
         return subprocess.CompletedProcess(
             args=cmd, returncode=0, stdout=stdout, stderr=stderr
         )
