@@ -25,20 +25,18 @@
         <aside class="left-panel">
             <div class="panel-section source-panel">
                 <div class="section-header">
-                    <h2>Sources</h2>
+                    <h2>Library</h2>
                     <button class="btn btn-icon btn-sm" id="btn-add-source" title="Add Source">+</button>
+                </div>
+                <div class="tabs tabs-subpanel">
+                    <button class="tab-btn active" data-library-tab="media">Media Library</button>
+                    <button class="tab-btn" data-library-tab="effects">Effects Panel</button>
                 </div>
                 <div class="source-list" id="source-list">
                     <!-- Source items injected here -->
                 </div>
-            </div>
-            
-            <div class="panel-section clip-panel">
-                <div class="section-header">
-                    <h2>Timeline (Clips)</h2>
-                </div>
-                <div class="clip-list" id="clip-list">
-                    <!-- Clip timeline injected here -->
+                <div class="source-list" id="effects-list" style="display:none;">
+                    <!-- Effects injected here -->
                 </div>
             </div>
         </aside>
@@ -92,6 +90,21 @@
                 <!-- Export controls injected here -->
             </div>
         </aside>
+
+        <section class="bottom-panel">
+            <div class="panel-section clip-panel">
+                <div class="section-header">
+                    <h2>Timeline</h2>
+                    <div style="display:flex; align-items:center; gap:8px; min-width:180px;">
+                        <label for="timeline-zoom" style="font-size:0.75rem;color:var(--text-muted);">Zoom Slider</label>
+                        <input type="range" id="timeline-zoom" min="0.75" max="1.6" step="0.05" value="1">
+                    </div>
+                </div>
+                <div class="clip-list" id="clip-list">
+                    <!-- Clip timeline injected here -->
+                </div>
+            </div>
+        </section>
     </main>
 
     <footer class="app-footer" id="app-footer">

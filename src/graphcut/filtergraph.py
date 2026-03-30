@@ -118,14 +118,21 @@ class FilterGraph:
         self.nodes.append(node)
         return vout, aout
 
-    def xfade(self, label_a: str, label_b: str, duration: float, offset: float) -> str:
+    def xfade(
+        self,
+        label_a: str,
+        label_b: str,
+        duration: float,
+        offset: float,
+        transition: str = "fade",
+    ) -> str:
         """Add a video crossfade transition."""
         vout = self._next_v_label()
         node = FilterNode(
             filter_name="xfade",
             inputs=[label_a, label_b],
             outputs=[vout],
-            params={"duration": duration, "offset": offset}
+            params={"transition": transition, "duration": duration, "offset": offset}
         )
         self.nodes.append(node)
         return vout

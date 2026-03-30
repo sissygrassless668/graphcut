@@ -1,5 +1,6 @@
 import { GraphCutAPI } from './api.js';
 import { SourcePanel } from './components/source-panel.js';
+import { EffectsPanel } from './components/effects-panel.js';
 import { ClipPanel } from './components/clip-panel.js';
 import { TranscriptPanel } from './components/transcript-panel.js';
 import { PreviewPanel } from './components/preview-panel.js';
@@ -20,7 +21,10 @@ class App {
             audioConfig: null,
             overlays: null,
             presets: null,
-            activeJob: null
+            activeJob: null,
+            activeClipIndex: null,
+            libraryTab: 'media',
+            timelineZoom: 1
         };
         this.components = {};
         this.progress = {
@@ -56,6 +60,7 @@ class App {
 
         // Resolve component dependencies 
         this.components.sources = new SourcePanel(this);
+        this.components.effects = new EffectsPanel(this);
         this.components.clips = new ClipPanel(this);
         this.components.transcript = new TranscriptPanel(this);
         this.components.preview = new PreviewPanel(this);
@@ -67,6 +72,9 @@ class App {
         
         await this.refreshState();
         this.bindTabNavigation();
+        this.bindLibraryTabs();
+        this.bindTimelineZoom();
+        this.applyLibraryTabState();
         console.log("App Initialized", this.state);
     }
 
@@ -92,6 +100,16 @@ class App {
             this.state.audioConfig = aud;
             this.state.overlays = ovr;
             this.state.presets = exp;
+            if (!Array.isArray(this.state.clips) || this.state.clips.length === 0) {
+                this.state.activeClipIndex = null;
+            } else if (this.state.activeClipIndex === null) {
+                this.state.activeClipIndex = 0;
+            } else if (
+                this.state.activeClipIndex !== null
+                && (this.state.activeClipIndex < 0 || this.state.activeClipIndex >= this.state.clips.length)
+            ) {
+                this.state.activeClipIndex = Math.max(0, this.state.clips.length - 1);
+            }
             
             // Notify components cleanly mapping DOM updates across boundary limits.
             Object.values(this.components).forEach(c => c.render());
@@ -104,18 +122,58 @@ class App {
     }
 
     bindTabNavigation() {
-        const tabs = document.querySelectorAll('.tab-btn');
+        const tabs = document.querySelectorAll('[data-tab]');
         tabs.forEach(tab => {
             tab.addEventListener('click', (e) => {
                 const target = e.target.dataset.tab;
+                if (!target) return;
                 
-                document.querySelectorAll('.tab-btn').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('[data-tab]').forEach(t => t.classList.remove('active'));
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 
                 e.target.classList.add('active');
                 document.getElementById(`tab-${target}`).classList.add('active');
             });
         });
+    }
+
+    bindLibraryTabs() {
+        const tabs = document.querySelectorAll('[data-library-tab]');
+        tabs.forEach((tab) => {
+            tab.addEventListener('click', (e) => {
+                const target = e.currentTarget.dataset.libraryTab;
+                this.state.libraryTab = target;
+                this.applyLibraryTabState();
+                this.components.sources.render();
+                this.components.effects.render();
+            });
+        });
+    }
+
+    applyLibraryTabState() {
+        const tabs = document.querySelectorAll('[data-library-tab]');
+        tabs.forEach((tab) => {
+            tab.classList.toggle('active', tab.dataset.libraryTab === this.state.libraryTab);
+        });
+        const sourceList = document.getElementById('source-list');
+        const effectsList = document.getElementById('effects-list');
+        if (sourceList) sourceList.style.display = this.state.libraryTab === 'media' ? 'grid' : 'none';
+        if (effectsList) effectsList.style.display = this.state.libraryTab === 'effects' ? 'flex' : 'none';
+    }
+
+    bindTimelineZoom() {
+        const zoom = document.getElementById('timeline-zoom');
+        if (!zoom) return;
+        zoom.addEventListener('input', (e) => {
+            this.state.timelineZoom = Number(e.target.value || 1);
+            this.components.clips.render();
+        });
+    }
+
+    setActiveClip(index) {
+        this.state.activeClipIndex = index;
+        this.components.clips.render();
+        this.components.effects.render();
     }
 
     updateProgress({ action = 'Working', progress = 0, eta = '--:--', speed = '0.0' } = {}) {

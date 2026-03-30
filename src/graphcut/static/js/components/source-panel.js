@@ -45,14 +45,17 @@ export class SourcePanel {
         Object.entries(this.app.state.sources).forEach(([id, info]) => {
             if (info.media_type !== 'video' && info.media_type !== 'audio') return;
             const el = document.createElement('div');
-            el.className = 'media-item';
+            el.className = 'media-item source-card';
+            const meta = info.media_type === 'audio'
+                ? `${(info.duration_seconds || 0).toFixed(1)}s • audio`
+                : `${(info.duration_seconds || 0).toFixed(1)}s • ${info.width || '--'}x${info.height || '--'}`;
             el.innerHTML = `
-                ${info.thumbnail ? `<img src="${info.thumbnail}" class="thumbnail" />` : `<div class="thumbnail"></div>`}
-                <div class="media-info" style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis;">
+                ${info.thumbnail ? `<img src="${info.thumbnail}" class="thumbnail source-thumb" />` : `<div class="thumbnail source-thumb"></div>`}
+                <div class="media-info source-info" style="flex-grow: 1; overflow: hidden; text-overflow: ellipsis;">
                     <div class="media-name" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="${id}">${id}</div>
-                    <div class="media-meta">${(info.duration_seconds || 0).toFixed(1)}s • ${info.width}x${info.height}</div>
+                    <div class="media-meta">${meta}</div>
                 </div>
-                <div style="display: flex; gap: 4px; padding-right: 8px;">
+                <div class="source-card-actions" style="display: flex; gap: 4px; padding-right: 8px;">
                     <button class="btn btn-sm btn-icon btn-add-clip" data-id="${id}" title="Add to Timeline">+</button>
                     <button class="btn btn-sm btn-icon btn-trim-add" data-id="${id}" title="Trim + Add Segment">✂</button>
                     <button class="btn btn-sm btn-icon btn-delete-source" style="color: var(--color-accent)" data-id="${id}" title="Delete Source">&times;</button>

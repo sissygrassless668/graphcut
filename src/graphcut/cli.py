@@ -18,6 +18,24 @@ from graphcut.exporter import Exporter
 logger = logging.getLogger(__name__)
 console = Console()
 
+AVAILABLE_TRANSITIONS = {
+    "cut": {
+        "label": "Cut",
+        "description": "Instant change to the next clip.",
+        "default_duration": 0.0,
+    },
+    "fade": {
+        "label": "Fade",
+        "description": "Classic dissolve between clips.",
+        "default_duration": 0.35,
+    },
+    "xfade": {
+        "label": "Crossfade",
+        "description": "Cinematic slide transition between clips.",
+        "default_duration": 0.6,
+    },
+}
+
 def _manifest_json(manifest) -> dict:
     # Uses Pydantic's JSON rendering so Paths/DateTimes become strings.
     return json.loads(manifest.model_dump_json())
@@ -42,6 +60,15 @@ def _parse_ranges(range_specs: tuple[str, ...]) -> list[tuple[float, float]]:
             raise click.BadParameter(f"Invalid range '{spec}'. END must be > START.")
         out.append((start, end))
     return out
+
+
+def _normalize_transition(name: str) -> str:
+    transition = (name or "").strip().lower()
+    if transition not in AVAILABLE_TRANSITIONS:
+        raise click.BadParameter(
+            f"Unknown transition '{name}'. Choose from: {', '.join(AVAILABLE_TRANSITIONS.keys())}."
+        )
+    return transition
 
 
 @click.group()
@@ -139,6 +166,15 @@ def timeline_list(project_dir: Path, as_json: bool) -> None:
 @click.option("--in", "trim_in", type=float, default=None, help="Trim start (seconds).")
 @click.option("--out", "trim_out", type=float, default=None, help="Trim end (seconds).")
 @click.option("--range", "ranges", multiple=True, help="Add multiple segments as START:END (repeatable).")
+@click.option(
+    "--transition",
+    "transition_name",
+    type=click.Choice(tuple(AVAILABLE_TRANSITIONS.keys()), case_sensitive=False),
+    default="cut",
+    show_default=True,
+    help="Outgoing transition to use after the inserted segment(s).",
+)
+@click.option("--transition-duration", type=float, default=None, help="Transition overlap duration in seconds.")
 @click.option("--pos", type=int, default=None, help="Insert position (1-based). Default: append.")
 @click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
 def timeline_add(
@@ -147,6 +183,8 @@ def timeline_add(
     trim_in: float | None,
     trim_out: float | None,
     ranges: tuple[str, ...],
+    transition_name: str,
+    transition_duration: float | None,
     pos: int | None,
     as_json: bool,
 ) -> None:
@@ -170,12 +208,27 @@ def timeline_add(
             segments = [(t0, t1)]
 
         insert_at = len(manifest.clip_order) if pos is None else max(0, min(len(manifest.clip_order), pos - 1))
+        transition = _normalize_transition(transition_name)
+        duration_value = (
+            AVAILABLE_TRANSITIONS[transition]["default_duration"]
+            if transition_duration is None
+            else max(0.0, float(transition_duration))
+        )
         for (t0, t1) in segments:
             if full and t1 > full:
                 t1 = full
             if t0 > t1:
                 continue
-            manifest.clip_order.insert(insert_at, ClipRef(source_id=source_id, trim_start=t0, trim_end=t1))
+            manifest.clip_order.insert(
+                insert_at,
+                ClipRef(
+                    source_id=source_id,
+                    trim_start=t0,
+                    trim_end=t1,
+                    transition=transition,  # type: ignore[arg-type]
+                    transition_duration=duration_value,
+                ),
+            )
             insert_at += 1
 
         ProjectManager.save_project(manifest, project_dir)
@@ -317,6 +370,66 @@ def timeline_clear(project_dir: Path) -> None:
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise click.Abort()
+
+
+@timeline.command("transition")
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.argument("index", type=int)
+@click.argument("transition_name", type=click.Choice(tuple(AVAILABLE_TRANSITIONS.keys()), case_sensitive=False))
+@click.option("--duration", type=float, default=None, help="Transition overlap duration in seconds.")
+def timeline_transition(project_dir: Path, index: int, transition_name: str, duration: float | None) -> None:
+    """Set the outgoing transition for a clip (index is 1-based)."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        i = index - 1
+        if i < 0 or i >= len(manifest.clip_order):
+            raise click.BadParameter("Invalid clip index.")
+
+        transition = _normalize_transition(transition_name)
+        clip = manifest.clip_order[i]
+        clip.transition = transition  # type: ignore[assignment]
+        clip.transition_duration = (
+            AVAILABLE_TRANSITIONS[transition]["default_duration"]
+            if duration is None
+            else max(0.0, float(duration))
+        )
+        manifest.clip_order[i] = clip
+        ProjectManager.save_project(manifest, project_dir)
+        console.print(
+            f"[bold green]Updated transition for clip[/bold green] #{index} -> "
+            f"{AVAILABLE_TRANSITIONS[transition]['label']} ({clip.transition_duration:.2f}s)"
+        )
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.group("effects")
+def effects_group() -> None:
+    """List and inspect available timeline effects/transitions."""
+
+
+@effects_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def effects_list(as_json: bool) -> None:
+    """List built-in transitions available to the GUI and CLI."""
+    if as_json:
+        console.print_json(json.dumps(AVAILABLE_TRANSITIONS))
+        return
+
+    table = Table(title="Timeline Effects")
+    table.add_column("ID", style="cyan")
+    table.add_column("Name", style="green")
+    table.add_column("Default Duration", style="yellow")
+    table.add_column("Description", style="magenta")
+    for effect_id, meta in AVAILABLE_TRANSITIONS.items():
+        table.add_row(
+            effect_id,
+            str(meta["label"]),
+            f"{float(meta['default_duration']):.2f}s",
+            str(meta["description"]),
+        )
+    console.print(table)
 
 
 @cli.command("roles")

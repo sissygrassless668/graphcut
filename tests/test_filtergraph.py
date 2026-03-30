@@ -43,7 +43,7 @@ def test_xfade_generates_valid_filter():
     
     assert vout == "vout0"
     compiled = fg.nodes[0].compile()
-    assert compiled == "[v1][v2]xfade=duration=0.5:offset=4.5[vout0]"
+    assert compiled == "[v1][v2]xfade=transition=fade:duration=0.5:offset=4.5[vout0]"
 
 
 def test_single_clip_no_concat():

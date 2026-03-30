@@ -17,6 +17,11 @@ from graphcut.transcript_editor import TranscriptEditor
 
 logger = logging.getLogger(__name__)
 
+TRANSITION_FILTERS = {
+    "fade": "fade",
+    "xfade": "slideleft",
+}
+
 
 class Renderer:
     """Orchestrates building filtergraphs and running FFmpeg."""
@@ -165,7 +170,7 @@ class Renderer:
             input_indices[source_id] = idx
 
         # 2. Add trims & transitions
-        processed_pairs: list[tuple[str, str]] = []
+        processed_clips: list[dict[str, str | float]] = []
         
         for clip in manifest.clip_order:
             if clip.source_id not in input_indices:
@@ -180,15 +185,23 @@ class Renderer:
 
             v_out = fg.trim(idx, start=t_start, end=t_end, stream="v")
             a_out = fg.trim(idx, start=t_start, end=t_end, stream="a")
-            
-            processed_pairs.append((v_out, a_out))
+
+            processed_clips.append(
+                {
+                    "video": v_out,
+                    "audio": a_out,
+                    "duration": max(0.0, t_end - t_start),
+                    "transition": clip.transition,
+                    "transition_duration": max(0.0, float(clip.transition_duration)),
+                }
+            )
 
         # 2b. Apply transcript_cuts — split segments around cut ranges
         if global_cuts:
-            cut_pairs: list[tuple[str, str]] = []
+            cut_clips: list[dict[str, str | float]] = []
             # Calculate global timeline position for each clip
             timeline_pos = 0.0
-            for i, clip in enumerate(manifest.clip_order):
+            for clip in manifest.clip_order:
                 info = manifest.sources[clip.source_id]
                 idx = input_indices[clip.source_id]
                 t_start = clip.trim_start if clip.trim_start is not None else 0.0
@@ -214,30 +227,82 @@ class Renderer:
                 if local_cuts:
                     # Build keep-segments between cuts
                     keep_start = t_start
+                    kept_segments: list[tuple[str, str, float]] = []
                     for ls, le in sorted(local_cuts):
                         if ls > keep_start:
                             v = fg.trim(idx, start=keep_start, end=ls, stream="v")
                             a = fg.trim(idx, start=keep_start, end=ls, stream="a")
-                            cut_pairs.append((v, a))
+                            kept_segments.append((v, a, max(0.0, ls - keep_start)))
                         keep_start = le
                     if keep_start < t_end:
                         v = fg.trim(idx, start=keep_start, end=t_end, stream="v")
                         a = fg.trim(idx, start=keep_start, end=t_end, stream="a")
-                        cut_pairs.append((v, a))
+                        kept_segments.append((v, a, max(0.0, t_end - keep_start)))
+
+                    for seg_index, (v, a, duration) in enumerate(kept_segments):
+                        cut_clips.append(
+                            {
+                                "video": v,
+                                "audio": a,
+                                "duration": duration,
+                                "transition": clip.transition if seg_index == len(kept_segments) - 1 else "cut",
+                                "transition_duration": max(0.0, float(clip.transition_duration)) if seg_index == len(kept_segments) - 1 else 0.0,
+                            }
+                        )
                 else:
-                    cut_pairs.append(processed_pairs[i])
+                    cut_clips.append(
+                        {
+                            "video": fg.trim(idx, start=t_start, end=t_end, stream="v"),
+                            "audio": fg.trim(idx, start=t_start, end=t_end, stream="a"),
+                            "duration": clip_duration,
+                            "transition": clip.transition,
+                            "transition_duration": max(0.0, float(clip.transition_duration)),
+                        }
+                    )
 
                 timeline_pos += clip_duration
 
-            processed_pairs = cut_pairs
+            processed_clips = cut_clips
+
+        if not processed_clips:
+            raise ValueError("All timeline content was removed by cuts. Add or restore clips before rendering.")
 
         # 3. Apply concat or transitions
-        if len(processed_pairs) == 1:
+        if len(processed_clips) == 1:
             # Single clip, no concat
-            final_v, final_a = processed_pairs[0]
+            final_v = str(processed_clips[0]["video"])
+            final_a = str(processed_clips[0]["audio"])
+            total_duration = float(processed_clips[0]["duration"])
         else:
-            # Needs concat
-            final_v, final_a = fg.concat(processed_pairs, n=len(processed_pairs))
+            current = processed_clips[0]
+            final_v = str(current["video"])
+            final_a = str(current["audio"])
+            total_duration = float(current["duration"])
+
+            for index, nxt in enumerate(processed_clips[1:]):
+                prev = processed_clips[index]
+                next_v = str(nxt["video"])
+                next_a = str(nxt["audio"])
+                next_duration = float(nxt["duration"])
+                transition = str(prev["transition"])
+                transition_duration = float(prev["transition_duration"])
+
+                if transition in TRANSITION_FILTERS and transition_duration > 0:
+                    overlap = min(transition_duration, total_duration, next_duration)
+                    if overlap > 0:
+                        final_v = fg.xfade(
+                            final_v,
+                            next_v,
+                            duration=overlap,
+                            offset=max(0.0, total_duration - overlap),
+                            transition=TRANSITION_FILTERS[transition],
+                        )
+                        final_a = fg.acrossfade(final_a, next_a, duration=overlap)
+                        total_duration += next_duration - overlap
+                        continue
+
+                final_v, final_a = fg.concat([(final_v, final_a), (next_v, next_a)], n=2)
+                total_duration += next_duration
 
         # 4. Handle Overlays (Webcam, Watermark)
         compositor = OverlayCompositor()
@@ -299,16 +364,6 @@ class Renderer:
         # 7. Compile final FilterGraph
         inputs, graph_str = fg.compile()
         fg.debug_print()
-        total_duration = 0.0
-        for clip in manifest.clip_order:
-            if clip.trim_start is not None and clip.trim_end is not None:
-                total_duration += (clip.trim_end - clip.trim_start)
-            else:
-                total_duration += manifest.sources[clip.source_id].duration_seconds
-
-        if global_cuts:
-            for cut in global_cuts:
-                total_duration -= (cut["end"] - cut["start"])
 
         # 4b. Mix Audio
         mixer = AudioMixer(manifest.audio_mix)

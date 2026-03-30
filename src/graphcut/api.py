@@ -354,15 +354,12 @@ def update_clip(index: int, req: UpdateClipReq, request: Request):
         raise HTTPException(404, "Clip not found")
 
     clip = manifest.clip_order[index]
-    if req.trim_start is not None:
-        clip.trim_start = max(0.0, float(req.trim_start))
-    else:
-        clip.trim_start = None
+    provided_fields = getattr(req, "model_fields_set", set())
+    if "trim_start" in provided_fields:
+        clip.trim_start = max(0.0, float(req.trim_start)) if req.trim_start is not None else None
 
-    if req.trim_end is not None:
-        clip.trim_end = max(0.0, float(req.trim_end))
-    else:
-        clip.trim_end = None
+    if "trim_end" in provided_fields:
+        clip.trim_end = max(0.0, float(req.trim_end)) if req.trim_end is not None else None
 
     if clip.trim_start is not None and clip.trim_end is not None and clip.trim_end <= clip.trim_start:
         raise HTTPException(400, "trim_end must be greater than trim_start")
