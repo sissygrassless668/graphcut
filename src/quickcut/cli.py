@@ -9,6 +9,7 @@ from rich.table import Table
 
 from quickcut.media_prober import probe_files
 from quickcut.project_manager import ProjectManager
+from quickcut.renderer import Renderer
 
 logger = logging.getLogger(__name__)
 console = Console()
@@ -140,6 +141,46 @@ def inspect_media(files: tuple[Path, ...]) -> None:
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise click.Abort()
+
+
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+def render_preview(project_dir: Path) -> None:
+    """Render a fast 480p preview of the project."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        renderer = Renderer()
+        
+        console.print(f"Rendering preview for '{manifest.name}'...")
+        output_path = renderer.render_preview(manifest, project_dir)
+        console.print(f"[bold green]Success![/bold green] Preview rendered to: {output_path}")
+        
+    except Exception as e:
+        console.print(f"[bold red]Render failed:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default="final", help="Render quality.")
+@click.option("--output", type=click.Path(file_okay=True, dir_okay=False, path_type=Path), help="Specific output filename.")
+def render(project_dir: Path, quality: str, output: Path | None) -> None:
+    """Render the project to a video file."""
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        renderer = Renderer()
+        
+        out_path = output or (project_dir / manifest.build_dir / f"{quality}.mp4")
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        console.print(f"Rendering '{manifest.name}' (quality: {quality})...")
+        final_path = renderer.render(manifest, out_path, quality=quality)
+        console.print(f"[bold green]Success![/bold green] Video rendered to: {final_path}")
+        
+    except Exception as e:
+        console.print(f"[bold red]Render failed:[/bold red] {e}")
+        raise click.Abort()
+
 
 
 if __name__ == "__main__":
