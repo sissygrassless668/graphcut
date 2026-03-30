@@ -71,6 +71,54 @@ class Renderer:
             
             processed_pairs.append((v_out, a_out))
 
+        # 2b. Apply transcript_cuts — split segments around cut ranges
+        if manifest.transcript_cuts:
+            cut_pairs: list[tuple[str, str]] = []
+            # Calculate global timeline position for each clip
+            timeline_pos = 0.0
+            for i, clip in enumerate(manifest.clip_order):
+                info = manifest.sources[clip.source_id]
+                idx = input_indices[clip.source_id]
+                t_start = clip.trim_start if clip.trim_start is not None else 0.0
+                t_end = clip.trim_end if clip.trim_end is not None else info.duration_seconds
+                clip_duration = t_end - t_start
+
+                # Find cuts that overlap this clip's global timeline range
+                clip_global_start = timeline_pos
+                clip_global_end = timeline_pos + clip_duration
+
+                # Collect local cut points (relative to clip start)
+                local_cuts: list[tuple[float, float]] = []
+                for cut in manifest.transcript_cuts:
+                    cut_s = cut["start"]
+                    cut_e = cut["end"]
+                    # Check overlap with this clip's global range
+                    if cut_s < clip_global_end and cut_e > clip_global_start:
+                        # Convert to local clip time
+                        local_s = max(0.0, cut_s - clip_global_start) + t_start
+                        local_e = min(clip_duration, cut_e - clip_global_start) + t_start
+                        local_cuts.append((local_s, local_e))
+
+                if local_cuts:
+                    # Build keep-segments between cuts
+                    keep_start = t_start
+                    for ls, le in sorted(local_cuts):
+                        if ls > keep_start:
+                            v = fg.trim(idx, start=keep_start, end=ls, stream="v")
+                            a = fg.trim(idx, start=keep_start, end=ls, stream="a")
+                            cut_pairs.append((v, a))
+                        keep_start = le
+                    if keep_start < t_end:
+                        v = fg.trim(idx, start=keep_start, end=t_end, stream="v")
+                        a = fg.trim(idx, start=keep_start, end=t_end, stream="a")
+                        cut_pairs.append((v, a))
+                else:
+                    cut_pairs.append(processed_pairs[i])
+
+                timeline_pos += clip_duration
+
+            processed_pairs = cut_pairs
+
         # 3. Apply concat or transitions
         if len(processed_pairs) == 1:
             # Single clip, no concat

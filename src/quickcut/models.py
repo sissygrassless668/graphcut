@@ -28,6 +28,44 @@ class MediaInfo(BaseModel):
     media_type: Literal["video", "audio", "image"] = "video"
 
 
+class TranscriptWord(BaseModel):
+    """A single word with timing from transcription."""
+
+    word: str
+    start: float
+    end: float
+    confidence: float = 0.0
+
+
+class TranscriptSegment(BaseModel):
+    """A segment of transcribed text (typically a sentence or phrase)."""
+
+    text: str
+    start: float
+    end: float
+    words: list[TranscriptWord] = Field(default_factory=list)
+
+
+class Transcript(BaseModel):
+    """Full transcript with word-level timestamps."""
+
+    segments: list[TranscriptSegment] = Field(default_factory=list)
+    source_id: str = ""
+    model_name: str = "medium"
+    language: str = "en"
+    duration: float = 0.0
+
+    @property
+    def all_words(self) -> list[TranscriptWord]:
+        """Flatten all words across segments."""
+        return [w for seg in self.segments for w in seg.words]
+
+    @property
+    def full_text(self) -> str:
+        """Return the full transcript as a single string."""
+        return " ".join(seg.text.strip() for seg in self.segments)
+
+
 class ClipRef(BaseModel):
     """Reference to a source clip with trim and transition settings."""
 

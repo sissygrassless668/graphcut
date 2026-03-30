@@ -182,6 +182,123 @@ def render(project_dir: Path, quality: str, output: Path | None) -> None:
         raise click.Abort()
 
 
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--model", default="medium", help="Whisper model name (tiny/base/small/medium/large-v3).")
+@click.option("--language", default=None, help="Language code (auto-detect if omitted).")
+def transcribe(project_dir: Path, model: str, language: str | None) -> None:
+    """Transcribe all source audio in a project."""
+    from quickcut.transcriber import Transcriber
+
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        transcriber = Transcriber(model_name=model)
+
+        for source_id, info in manifest.sources.items():
+            if info.media_type in ("video", "audio"):
+                console.print(f"Transcribing [cyan]{source_id}[/cyan]...")
+                transcript = transcriber.transcribe(
+                    info.file_path, cache_dir=project_dir, language=language
+                )
+                console.print(
+                    f"  ✓ {len(transcript.segments)} segments, "
+                    f"{len(transcript.all_words)} words, "
+                    f"language: {transcript.language}"
+                )
+                console.print(f"  [dim]{transcript.full_text[:200]}...[/dim]")
+
+        console.print("[bold green]Transcription complete.[/bold green]")
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--threshold", default=27.0, help="Detection sensitivity (lower = more sensitive).")
+def detect_scenes(project_dir: Path, threshold: float) -> None:
+    """Detect scene boundaries in project video sources."""
+    from quickcut.scene_detector import detect_scenes as _detect
+
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+        table = Table(title="Scene Detection Results")
+        table.add_column("Source", style="cyan")
+        table.add_column("Scene #", style="magenta")
+        table.add_column("Start", style="green")
+        table.add_column("End", style="green")
+        table.add_column("Duration", style="yellow")
+
+        for source_id, info in manifest.sources.items():
+            if info.media_type == "video":
+                scenes = _detect(info.file_path, threshold=threshold)
+                for s in scenes:
+                    dur = s["end"] - s["start"]
+                    table.add_row(
+                        source_id,
+                        str(s["index"]),
+                        f"{s['start']:.2f}s",
+                        f"{s['end']:.2f}s",
+                        f"{dur:.2f}s",
+                    )
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command()
+@click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--min-duration", default=1.0, help="Minimum silence duration to cut (seconds).")
+@click.option("--preview", is_flag=True, help="Preview cuts without applying them.")
+def remove_silences(project_dir: Path, min_duration: float, preview: bool) -> None:
+    """Detect and remove long silences from the project."""
+    from quickcut.silence_detector import detect_silences, suggest_jump_cuts
+
+    try:
+        manifest = ProjectManager.load_project(project_dir)
+
+        all_cuts: list[dict] = []
+        for source_id, info in manifest.sources.items():
+            if info.media_type in ("video", "audio"):
+                silences = detect_silences(info.file_path, min_duration=min_duration)
+                cuts = suggest_jump_cuts(silences)
+                all_cuts.extend(cuts)
+                console.print(
+                    f"[cyan]{source_id}[/cyan]: {len(silences)} silences → {len(cuts)} cuts"
+                )
+
+        if not all_cuts:
+            console.print("No significant silences detected.")
+            return
+
+        if preview:
+            table = Table(title="Suggested Silence Cuts (Preview)")
+            table.add_column("#", style="dim")
+            table.add_column("Start", style="green")
+            table.add_column("End", style="green")
+            table.add_column("Duration", style="yellow")
+            for i, cut in enumerate(all_cuts):
+                dur = cut["end"] - cut["start"]
+                table.add_row(str(i), f"{cut['start']:.2f}s", f"{cut['end']:.2f}s", f"{dur:.2f}s")
+            console.print(table)
+            console.print("[dim]Run without --preview to apply these cuts.[/dim]")
+        else:
+            from quickcut.transcript_editor import TranscriptEditor
+            TranscriptEditor.apply_cuts(manifest, all_cuts)
+            ProjectManager.save_project(manifest, project_dir)
+            console.print(
+                f"[bold green]Applied {len(all_cuts)} silence cuts to project.[/bold green]"
+            )
+
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
 
 if __name__ == "__main__":
     cli()
+
