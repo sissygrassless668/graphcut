@@ -28,6 +28,17 @@ Tired of waiting for cloud processing? Frustrated by bloated timelines for simpl
 * 💻 **Code as the Editor:** No proprietary, corruptible binary project formats. Your project manifest is a standard, human-readable YAML file that statically drives FFmpeg filtergraphs.
 * 🚀 **Automation Ready:** Every single GUI or CLI action translates directly to programmable backend rendering functions. Build your own mass-rendering loops or integrate with your existing automation suites.
 
+## 🤖 Built for AI Agents
+
+Because GraphCut is entirely deterministic and backed by simple JSON/YAML manifests, **it is the ultimate video editor for AI coding agents.**
+
+Instead of wrestling with headless browsers or proprietary GUI scripting, an AI agent can simply:
+1. Ingest your raw footage.
+2. Generate a `project.yaml` containing precise cut timestamps, overlay logic, and styling.
+3. Run `graphcut export my-video` via the CLI.
+
+Zero GUI required. You can completely automate your video pipeline—letting your locally running LLMs assemble, narrate, and polish YouTube or TikTok clips while you sleep!
+
 ## 📸 Interactive Web GUI
 
 GraphCut isn't just a CLI script. It features a full, decoupled native Web UI designed to edit video from the browser without the lag.
