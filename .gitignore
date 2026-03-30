@@ -5,3 +5,6 @@ __pycache__/
 test-project/
 artifacts/
 .DS_Store
+
+.agent/
+.planning/
