@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 from pathlib import Path
 
@@ -41,15 +42,29 @@ class AudioNormalizer:
         
         try:
             from ffmpeg_normalize import FFmpegNormalize
-            norm = FFmpegNormalize(
-                target_level=target_lufs,
-                true_peak=true_peak,
-                loudness_range_target=7.0,
-                audio_codec="aac",
-                audio_bitrate="192k",
-                video_codec="copy",  # Passthrough video
-                subtitle_codec="copy",
-            )
+            norm_kwargs = {
+                "target_level": target_lufs,
+                "true_peak": true_peak,
+                "loudness_range_target": 7.0,
+                "audio_codec": "aac",
+                "audio_bitrate": "192k",
+                "video_codec": "copy",  # Passthrough video
+                "subtitle_codec": "copy",
+            }
+            signature = inspect.signature(FFmpegNormalize.__init__)
+            supported_kwargs = {
+                key: value
+                for key, value in norm_kwargs.items()
+                if key in signature.parameters
+            }
+            dropped_kwargs = sorted(set(norm_kwargs) - set(supported_kwargs))
+            if dropped_kwargs:
+                logger.info(
+                    "Installed ffmpeg-normalize does not support %s; continuing with compatible options.",
+                    ", ".join(dropped_kwargs),
+                )
+
+            norm = FFmpegNormalize(**supported_kwargs)
             
             norm.add_media_file(str(input_path), str(output_path))
             norm.run_normalization()
