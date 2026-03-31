@@ -41,6 +41,7 @@ class Exporter:
         output_dir: Path,
         progress_callback: Callable[[float, str, str], None] | None = None,
         project_dir: Path | None = None,
+        preferred_video_encoder: str | None = None,
     ) -> Path:
         """Export the project to a specific format preset."""
         output_path = output_dir / self.build_output_filename(manifest, preset)
@@ -73,6 +74,7 @@ class Exporter:
             output_path,
             progress_callback,
             project_dir=project_dir,
+            preferred_video_encoder=preferred_video_encoder,
         )
 
     def _render_with_preset(
@@ -82,20 +84,10 @@ class Exporter:
         output_path: Path,
         progress_callback: Callable[[float, str, str], None] | None = None,
         project_dir: Path | None = None,
+        preferred_video_encoder: str | None = None,
     ) -> Path:
         """Internal render invocation adapting the Preset bounds onto the renderer's logic."""
-        
-        # 1. Determine base encoder and params based on quality
-        encoder = self.executor.get_best_encoder()
-        encoder_args = self._get_encoder_params(encoder, preset.quality)
-        
-        # 2. Add bitrate args depending on the preset
-        if preset.video_bitrate:
-            if "videotoolbox" not in encoder:  # VTB relies on -q:v primarily
-                encoder_args.extend(["-b:v", preset.video_bitrate])
-        
-        encoder_args.extend(["-c:a", "aac", "-b:a", preset.audio_bitrate])
-        
+
         # We will dynamically adjust the Renderer's `quality` checks.
         # To do this correctly inside `Renderer.render()`, we can just call renderer.render() 
         # if we modify Publisher patterns. But we need custom aspect ratios.
@@ -121,13 +113,14 @@ class Exporter:
         # We will directly run the renderer but we inject our encoder arguments and aspect ratio logic.
         # We need to add an `export_filter` param to Renderer.render.
         return self.renderer.render(
-            manifest, 
-            output_path, 
+            manifest,
+            output_path,
             project_dir=project_dir,
             quality=preset.quality,
             export_filter_hook=ar_filter,
-            encoder_args_override=encoder_args,
-            progress_callback=progress_callback
+            encoder_args_factory=lambda encoder: self.build_encoder_args(encoder, preset),
+            progress_callback=progress_callback,
+            preferred_video_encoder=preferred_video_encoder,
         )
         
     def export_all(
@@ -137,6 +130,7 @@ class Exporter:
         presets: list[ExportPreset] | None = None,
         progress_callback: Callable[[float, str, str], None] | None = None,
         project_dir: Path | None = None,
+        preferred_video_encoder: str | None = None,
     ) -> list[Path]:
         """Export to all provided presets sequentially."""
         if project_dir is None and output_dir.name == manifest.build_dir:
@@ -151,10 +145,21 @@ class Exporter:
                 output_dir,
                 progress_callback,
                 project_dir=project_dir,
+                preferred_video_encoder=preferred_video_encoder,
             )
             results.append(res)
             
         return results
+
+    def build_encoder_args(self, encoder: str, preset: ExportPreset) -> list[str]:
+        """Build encoder/audio args for a preset and a specific video encoder."""
+        encoder_args = self._get_encoder_params(encoder, preset.quality)
+
+        if preset.video_bitrate and "videotoolbox" not in encoder:
+            encoder_args.extend(["-b:v", preset.video_bitrate])
+
+        encoder_args.extend(["-c:a", "aac", "-b:a", preset.audio_bitrate])
+        return encoder_args
 
     def _get_encoder_params(self, encoder: str, quality: str) -> list[str]:
         """Return FFmpeg parameters based on quality tier and hardware encoder."""

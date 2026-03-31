@@ -420,7 +420,7 @@ def build_plan(
 
 
 def _workspace_project_dir(source_path: Path, output_dir: Path) -> Path:
-    digest = hashlib.sha1(str(source_path.resolve()).encode("utf-8")).hexdigest()[:8]
+    digest = hashlib.sha256(str(source_path.resolve()).encode("utf-8")).hexdigest()[:8]
     hidden_root = output_dir / ".graphcut"
     return hidden_root / f"{_slugify(source_path.stem)}-{digest}"
 

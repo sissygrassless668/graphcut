@@ -44,6 +44,7 @@ class FFmpegExecutor:
         "h264_qsv",  # Intel Quick Sync
         "libx264",  # Software fallback (always available)
     ]
+    _SOFTWARE_ENCODER = "libx264"
 
     def __init__(
         self,
@@ -74,8 +75,6 @@ class FFmpegExecutor:
         if location is None:
             try:
                 import static_ffmpeg
-                import requests
-                import urllib3
                 import urllib.request
                 
                 sys_proxies = urllib.request.getproxies()
@@ -85,22 +84,23 @@ class FFmpegExecutor:
                 if manual_override:
                     sys_proxies = {"http": manual_override, "https": manual_override}
 
-                # Corporate Proxy Bypass: Inject Windows Registry web proxies and disable strict MITM SSL
-                urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                original_get = requests.get
-                
-                def unverified_get(*args, **kwargs):
-                    kwargs['verify'] = False
-                    if 'proxies' not in kwargs and sys_proxies:
-                        kwargs['proxies'] = sys_proxies
-                    return original_get(*args, **kwargs)
-                
-                requests.get = unverified_get
-                
+                proxy_env_updates: dict[str, str | None] = {}
+                for scheme in ("http", "https"):
+                    proxy = sys_proxies.get(scheme)
+                    if not proxy:
+                        continue
+                    for key in (f"{scheme.upper()}_PROXY", f"{scheme.lower()}_proxy"):
+                        proxy_env_updates.setdefault(key, os.environ.get(key))
+                        os.environ[key] = proxy
+
                 try: # add_paths() mutates os.environ["PATH"] inside Python
                     static_ffmpeg.add_paths()
-                finally: # Restore original to prevent global pollution
-                    requests.get = original_get
+                finally: # Restore temporary proxy environment overrides
+                    for key, previous in proxy_env_updates.items():
+                        if previous is None:
+                            os.environ.pop(key, None)
+                        else:
+                            os.environ[key] = previous
                     
                 location = shutil.which(name)
             except Exception as e:
@@ -156,19 +156,52 @@ class FFmpegExecutor:
         logger.debug("Available encoders: %s", self._encoder_cache)
         return self._encoder_cache
 
-    def get_best_encoder(self) -> str:
+    def get_best_encoder(self, preferred: str | None = None) -> str:
         """Return the best available H.264 encoder.
 
         Priority: videotoolbox > nvenc > qsv > libx264.
         """
         available = self.detect_encoders()
+        requested = (preferred or os.environ.get("GRAPHCUT_VIDEO_ENCODER") or "").strip()
+        if requested:
+            if available.get(requested, False):
+                logger.debug("Selected requested encoder: %s", requested)
+                return requested
+            logger.warning("Requested video encoder '%s' is unavailable; falling back to auto-detect.", requested)
+
         for encoder in self._ENCODER_PRIORITY:
             if available.get(encoder, False):
                 logger.debug("Selected encoder: %s", encoder)
                 return encoder
 
         # libx264 should always be available, but just in case
-        return "libx264"
+        return self._SOFTWARE_ENCODER
+
+    @classmethod
+    def is_hardware_encoder(cls, encoder: str) -> bool:
+        """Return True when the encoder depends on a hardware backend."""
+        return encoder != cls._SOFTWARE_ENCODER and any(
+            token in encoder for token in ("videotoolbox", "nvenc", "qsv")
+        )
+
+    @classmethod
+    def should_retry_with_software(cls, encoder: str, error: FFmpegError) -> bool:
+        """Return True when a hardware encoder failed during initialization."""
+        if not cls.is_hardware_encoder(encoder):
+            return False
+
+        stderr = (error.stderr or "").lower()
+        failure_markers = (
+            "could not open encoder",
+            "error while opening encoder",
+            "open encode session failed",
+            "no capable devices found",
+            "cannot load nvcuda",
+            "device not available",
+            "initialization failed",
+            "unsupported device",
+        )
+        return any(marker in stderr for marker in failure_markers)
 
     def run_ffprobe(self, file_path: Path) -> dict[str, Any]:
         """Run ffprobe on a file and return parsed JSON output.

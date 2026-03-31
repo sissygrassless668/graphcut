@@ -137,6 +137,8 @@ class Renderer:
         progress_callback: Callable[[float, str, str], None] | None = None,
         export_filter_hook: Callable[[FilterGraph, str], str] | None = None,
         encoder_args_override: list[str] | None = None,
+        encoder_args_factory: Callable[[str], list[str]] | None = None,
+        preferred_video_encoder: str | None = None,
     ) -> Path:
         """Render a project manifest to an MP4 file.
         
@@ -148,6 +150,8 @@ class Renderer:
             progress_callback: Optional callable for real-time progress.
             export_filter_hook: Optional intercept to attach dynamic overlay scaling constraints via filtergraph string modification.
             encoder_args_override: Optional list replacing final video outputs commands formatting mapping.
+            encoder_args_factory: Optional callable that builds encoder args for the selected video encoder.
+            preferred_video_encoder: Optional FFmpeg video encoder override.
             
         Returns:
             The path to the rendered output.
@@ -411,44 +415,66 @@ class Renderer:
         inputs, graph_str = fg.compile()
         fg.debug_print()
         
-        # 8. Build command
-        encoder = self.executor.get_best_encoder()
-        cmd = []
-        for inp in inputs:
-            cmd.extend(["-i", str(inp)])
-            
-        cmd.extend([
-            "-filter_complex", graph_str,
-            "-map", f"[{final_v}]",
-            "-map", f"[{final_a}]",
-        ])
-        
-        if encoder_args_override:
-            cmd.extend(encoder_args_override)
-        else:
-            cmd.append("-c:v")
-            cmd.append(encoder)
+        def build_encode_args(selected_encoder: str) -> list[str]:
+            if encoder_args_factory:
+                return encoder_args_factory(selected_encoder)
+
+            if encoder_args_override:
+                return list(encoder_args_override)
+
+            args = ["-c:v", selected_encoder]
             if quality == "preview":
-                cmd.extend(["-preset", "fast", "-crf", "28"])
+                args.extend(["-preset", "fast", "-crf", "28"])
             else:
-                cmd.extend(["-preset", "medium", "-crf", "23"])
-            
-            cmd.extend([
+                args.extend(["-preset", "medium", "-crf", "23"])
+
+            args.extend([
                 "-c:a", "aac",
                 "-b:a", "192k"
             ])
-            
-        cmd.extend([
-            "-y", str(output_path)
-        ])
+            return args
 
-        # 7. Execute
+        def build_command(selected_encoder: str) -> list[str]:
+            cmd: list[str] = []
+            for inp in inputs:
+                cmd.extend(["-i", str(inp)])
+
+            cmd.extend([
+                "-filter_complex", graph_str,
+                "-map", f"[{final_v}]",
+                "-map", f"[{final_a}]",
+            ])
+            cmd.extend(build_encode_args(selected_encoder))
+            cmd.extend(["-y", str(output_path)])
+            return cmd
+
+        encoder = self.executor.get_best_encoder(preferred_video_encoder)
+        cmd = build_command(encoder)
+
         logger.info("Starting render to %s using %s", output_path, encoder)
-        self.executor.run(
-            args=cmd,
-            progress_callback=progress_callback,
-            duration=total_duration
-        )
+        try:
+            self.executor.run(
+                args=cmd,
+                progress_callback=progress_callback,
+                duration=total_duration
+            )
+        except FFmpegError as exc:
+            if not self.executor.should_retry_with_software(encoder, exc):
+                raise
+
+            fallback_encoder = "libx264"
+            if fallback_encoder == encoder:
+                raise
+            logger.warning(
+                "Hardware encoder %s failed to initialize. Retrying render with %s.",
+                encoder,
+                fallback_encoder,
+            )
+            self.executor.run(
+                args=build_command(fallback_encoder),
+                progress_callback=progress_callback,
+                duration=total_duration
+            )
 
         # 8. Normalize output audio if configured
         if manifest.audio_mix.normalize:
@@ -465,16 +491,38 @@ class Renderer:
 
         return output_path
 
-    def render_preview(self, manifest: ProjectManifest, project_dir: Path) -> Path:
+    def render_preview(
+        self,
+        manifest: ProjectManifest,
+        project_dir: Path,
+        preferred_video_encoder: str | None = None,
+    ) -> Path:
         """Render a 480p preview to the build directory."""
         build_dir = project_dir / manifest.build_dir
         build_dir.mkdir(parents=True, exist_ok=True)
         output = build_dir / "preview.mp4"
-        return self.render(manifest, output, project_dir=project_dir, quality="preview")
+        return self.render(
+            manifest,
+            output,
+            project_dir=project_dir,
+            quality="preview",
+            preferred_video_encoder=preferred_video_encoder,
+        )
 
-    def render_final(self, manifest: ProjectManifest, project_dir: Path) -> Path:
+    def render_final(
+        self,
+        manifest: ProjectManifest,
+        project_dir: Path,
+        preferred_video_encoder: str | None = None,
+    ) -> Path:
         """Render a full-quality export to the build directory."""
         build_dir = project_dir / manifest.build_dir
         build_dir.mkdir(parents=True, exist_ok=True)
         output = build_dir / "final.mp4"
-        return self.render(manifest, output, project_dir=project_dir, quality="final")
+        return self.render(
+            manifest,
+            output,
+            project_dir=project_dir,
+            quality="final",
+            preferred_video_encoder=preferred_video_encoder,
+        )

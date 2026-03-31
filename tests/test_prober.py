@@ -28,3 +28,17 @@ def test_best_encoder():
     assert isinstance(best, str)
     assert len(best) > 0
     assert best in ("h264_videotoolbox", "h264_nvenc", "h264_qsv", "libx264")
+
+
+def test_best_encoder_honors_env_override(monkeypatch):
+    """Explicit encoder overrides should win when the encoder is available."""
+    executor = FFmpegExecutor()
+
+    monkeypatch.setattr(
+        executor,
+        "detect_encoders",
+        lambda: {"h264_nvenc": True, "libx264": True},
+    )
+    monkeypatch.setenv("GRAPHCUT_VIDEO_ENCODER", "libx264")
+
+    assert executor.get_best_encoder() == "libx264"

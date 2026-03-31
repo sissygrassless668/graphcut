@@ -1434,14 +1434,19 @@ def inspect_media(files: tuple[Path, ...]) -> None:
 
 @cli.command()
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
-def render_preview(project_dir: Path) -> None:
+@click.option("--video-codec", type=str, help="Preferred FFmpeg video encoder, e.g. libx264 or h264_nvenc.")
+def render_preview(project_dir: Path, video_codec: str | None) -> None:
     """Render a fast 480p preview of the project."""
     try:
         manifest = ProjectManager.load_project(project_dir)
         renderer = Renderer()
         
         console.print(f"Rendering preview for '{manifest.name}'...")
-        output_path = renderer.render_preview(manifest, project_dir)
+        output_path = renderer.render_preview(
+            manifest,
+            project_dir,
+            preferred_video_encoder=video_codec,
+        )
         console.print(f"[bold green]Success![/bold green] Preview rendered to: {output_path}")
         
     except Exception as e:
@@ -1455,7 +1460,15 @@ def render_preview(project_dir: Path) -> None:
 @click.option("--output", type=click.Path(file_okay=True, dir_okay=False, path_type=Path), help="Specific output filename.")
 @click.option("--preset", type=str, help="Specific preset name to render (e.g. youtube, shorts, square).")
 @click.option("--all-presets", is_flag=True, help="Render to all defined presets.")
-def render(project_dir: Path, quality: str, output: Path | None, preset: str | None, all_presets: bool) -> None:
+@click.option("--video-codec", type=str, help="Preferred FFmpeg video encoder, e.g. libx264 or h264_nvenc.")
+def render(
+    project_dir: Path,
+    quality: str,
+    output: Path | None,
+    preset: str | None,
+    all_presets: bool,
+    video_codec: str | None,
+) -> None:
     """Render the project to a video file."""
     # We delegate to export under the hood, but retain `render` for legacy tests.
     try:
@@ -1478,19 +1491,36 @@ def render(project_dir: Path, quality: str, output: Path | None, preset: str | N
                 progress.update(task, completed=pct, speed=speed, eta=eta)
                 
             if all_presets:
-                exporter.export_all(manifest, out_path, progress_callback=cb)
+                exporter.export_all(
+                    manifest,
+                    out_path,
+                    progress_callback=cb,
+                    preferred_video_encoder=video_codec,
+                )
             elif preset:
                 p = next((x for x in manifest.export_presets if x.name.lower() == preset.lower()), None)
                 if not p:
                     raise click.BadParameter(f"Preset {preset} not found.")
                 # apply quality
                 p.quality = quality
-                exporter.export(manifest, p, out_path, progress_callback=cb)
+                exporter.export(
+                    manifest,
+                    p,
+                    out_path,
+                    progress_callback=cb,
+                    preferred_video_encoder=video_codec,
+                )
             else:
                 # Fallback to direct renderer via default configuration 
                 # (1080p native bounds, final quality) just using renderer directly.
                 renderer = Renderer()
-                renderer.render(manifest, output or (out_path / f"{quality}.mp4"), quality=quality, progress_callback=cb)
+                renderer.render(
+                    manifest,
+                    output or (out_path / f"{quality}.mp4"),
+                    quality=quality,
+                    progress_callback=cb,
+                    preferred_video_encoder=video_codec,
+                )
                 
     except Exception as e:
         console.print(f"[bold red]Render failed:[/bold red] {e}")
@@ -1503,7 +1533,15 @@ def render(project_dir: Path, quality: str, output: Path | None, preset: str | N
 @click.option("--all", "export_all", is_flag=True, help="Render to all defined presets.")
 @click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default=None, help="Override preset quality.")
 @click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), help="Output directory.")
-def export(project_dir: Path, preset: str | None, export_all: bool, quality: str | None, output_dir: Path | None) -> None:
+@click.option("--video-codec", type=str, help="Preferred FFmpeg video encoder, e.g. libx264 or h264_nvenc.")
+def export(
+    project_dir: Path,
+    preset: str | None,
+    export_all: bool,
+    quality: str | None,
+    output_dir: Path | None,
+    video_codec: str | None,
+) -> None:
     """Export the project across social formats with HW acceleration and progress reporting."""
     try:
         manifest = ProjectManager.load_project(project_dir)
@@ -1544,7 +1582,13 @@ def export(project_dir: Path, preset: str | None, export_all: bool, quality: str
                 def pcb(pct: float, spd: str, rem: str):
                     progress.update(ptask, completed=pct, speed=spd, eta=rem)
                     
-                final_path = exporter.export(manifest, target, out_path, progress_callback=pcb)
+                final_path = exporter.export(
+                    manifest,
+                    target,
+                    out_path,
+                    progress_callback=pcb,
+                    preferred_video_encoder=video_codec,
+                )
 
             console.print(f"[bold green]✓ Done:[/bold green] {final_path}")
             
