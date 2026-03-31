@@ -3,16 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="GraphCut — Local-first video editor with automation-first workflow">
     <title>GraphCut Editor</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/css/editor.css">
 </head>
 <body>
     <header class="app-header">
         <div class="logo">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>
             <h1>GraphCut</h1>
         </div>
         <div class="header-controls">
@@ -26,11 +27,13 @@
             <div class="panel-section source-panel">
                 <div class="section-header">
                     <h2>Library</h2>
-                    <button class="btn btn-icon btn-sm" id="btn-add-source" title="Add Source">+</button>
+                    <button class="btn btn-icon btn-sm" id="btn-add-source" title="Import Media">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                    </button>
                 </div>
                 <div class="tabs tabs-subpanel">
-                    <button class="tab-btn active" data-library-tab="media">Media Library</button>
-                    <button class="tab-btn" data-library-tab="effects">Effects Panel</button>
+                    <button class="tab-btn active" data-library-tab="media">Media</button>
+                    <button class="tab-btn" data-library-tab="effects">Effects</button>
                 </div>
                 <div class="source-list" id="source-list">
                     <!-- Source items injected here -->
@@ -45,6 +48,9 @@
         <section class="center-panel">
             <div class="preview-panel" id="preview-container">
                 <div class="placeholder-preview">
+                    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2" style="opacity:0.3">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                    </svg>
                     <span>No Preview Available</span>
                     <button class="btn btn-primary mt-sm" id="btn-render-preview">Render Preview</button>
                 </div>
@@ -95,8 +101,8 @@
             <div class="panel-section clip-panel">
                 <div class="section-header">
                     <h2>Timeline</h2>
-                    <div style="display:flex; align-items:center; gap:8px; min-width:180px;">
-                        <label for="timeline-zoom" style="font-size:0.75rem;color:var(--text-muted);">Zoom Slider</label>
+                    <div style="display:flex; align-items:center; gap:10px; min-width:180px;">
+                        <label for="timeline-zoom" style="font-size:0.68rem;color:var(--text-muted);font-weight:600;text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;">Zoom</label>
                         <input type="range" id="timeline-zoom" min="0.75" max="1.6" step="0.05" value="1">
                     </div>
                 </div>

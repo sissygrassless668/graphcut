@@ -35,6 +35,7 @@ def test_project_manifest_defaults():
     assert manifest.clip_order == []
     assert manifest.scenes == {}
     assert manifest.active_scene is None
+    assert manifest.burn_captions is True
     assert len(manifest.export_presets) == 3
     assert manifest.export_presets[0].name == "YouTube"
 

@@ -332,7 +332,7 @@ class Renderer:
         # 6. Add Captions (Burn-in)
         # Assuming we check if there's a cached transcript mapped to the primary source
         try:
-            if project_dir and manifest.clip_order:
+            if project_dir and manifest.clip_order and manifest.burn_captions:
                 main_src_id = manifest.clip_order[0].source_id
                 main_src = manifest.sources[main_src_id]
                 transcript_path = project_dir / ".cache" / "transcripts" / f"{main_src.file_hash}_medium.json"

@@ -190,6 +190,7 @@ class ProjectManifest(BaseModel):
     webcam: WebcamOverlay | None = None
     audio_mix: AudioMix = Field(default_factory=AudioMix)
     caption_style: CaptionStyle = Field(default_factory=CaptionStyle)
+    burn_captions: bool = True
     export_presets: list[ExportPreset] = Field(
         default_factory=lambda: list(DEFAULT_EXPORT_PRESETS)
     )

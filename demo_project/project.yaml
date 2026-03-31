@@ -1,0 +1,54 @@
+version: '1.0'
+name: demo_project
+created_at: '2026-03-30T21:02:30.837075Z'
+updated_at: '2026-03-30T21:02:30.837075Z'
+sources: {}
+clip_order: []
+narration: null
+music: null
+webcam: null
+audio_mix:
+  source_gain_db: 0.0
+  narration_gain_db: 0.0
+  music_gain_db: -12.0
+  ducking_strength: 0.7
+  silence_threshold_db: -40.0
+  normalize: true
+  target_lufs: -23.0
+caption_style:
+  style: clean
+  font: Arial
+  font_size: 24
+  outline_width: 2
+  position: bottom
+  max_words_per_line: 8
+  margin_bottom: 50
+export_presets:
+- name: YouTube
+  aspect_ratio: '16:9'
+  width: 1920
+  height: 1080
+  fit_mode: letterbox
+  quality: final
+  video_bitrate: 8M
+  audio_bitrate: 192k
+- name: Shorts
+  aspect_ratio: '9:16'
+  width: 1080
+  height: 1920
+  fit_mode: letterbox
+  quality: final
+  video_bitrate: 6M
+  audio_bitrate: 192k
+- name: Square
+  aspect_ratio: '1:1'
+  width: 1080
+  height: 1080
+  fit_mode: letterbox
+  quality: final
+  video_bitrate: 6M
+  audio_bitrate: 192k
+scenes: {}
+active_scene: null
+transcript_cuts: []
+build_dir: build

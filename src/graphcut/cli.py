@@ -9,8 +9,27 @@ from rich.console import Console
 from rich.table import Table
 from rich.progress import Progress, TextColumn, BarColumn, TimeRemainingColumn
 
+from graphcut.agent_workflows import (
+    build_publish_bundle,
+    build_storyboard,
+    bundle_to_markdown,
+    resolve_script_text,
+    viralize,
+)
+from graphcut.agent_runner import agent_template, build_creator_brief, run_agent_job
+from graphcut.factory import build_plan, execute_plan
+from graphcut.generation_queue import (
+    fetch_job,
+    get_job,
+    list_jobs,
+    list_provider_names,
+    load_storyboard,
+    submit_job,
+    wait_for_job,
+)
 from graphcut.media_prober import probe_files
 from graphcut.models import ClipRef, SceneConfig
+from graphcut.platforms import list_platform_profiles, list_workflow_recipes
 from graphcut.project_manager import ProjectManager
 from graphcut.renderer import Renderer
 from graphcut.exporter import Exporter
@@ -71,6 +90,62 @@ def _normalize_transition(name: str) -> str:
     return transition
 
 
+def _print_factory_plan(plan, as_json: bool) -> None:
+    if as_json:
+        console.print_json(json.dumps(plan.to_dict()))
+        return
+
+    table = Table(title=f"{plan.mode.title()} Plan")
+    table.add_column("#", style="dim", justify="right")
+    table.add_column("Output", style="cyan")
+    table.add_column("Range", style="green")
+    table.add_column("Duration", style="yellow")
+    table.add_column("Score", style="magenta")
+    table.add_column("Notes", style="blue")
+
+    for index, item in enumerate(plan.outputs, start=1):
+        score = f"{item.score:.1f}" if item.score is not None else "-"
+        notes = item.reason or ""
+        table.add_row(
+            str(index),
+            item.filename,
+            f"{item.start:.2f}s -> {item.end:.2f}s",
+            f"{item.duration:.2f}s",
+            score,
+            notes,
+        )
+
+    console.print(table)
+    console.print(
+        f"[bold]Platform:[/bold] {plan.platform.label}  "
+        f"[bold]Captions:[/bold] {plan.captions}  "
+        f"[bold]Outputs:[/bold] {len(plan.outputs)}  "
+        f"[bold]Output Dir:[/bold] {plan.output_dir}"
+    )
+    if plan.scene_count or plan.silence_count:
+        console.print(
+            f"[dim]Detected {plan.scene_count} scenes and {plan.silence_count} silence cuts.[/dim]"
+        )
+    for warning in plan.warnings:
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+
+def _emit_payload(payload: dict, as_json: bool, output: Path | None = None, markdown: str | None = None) -> None:
+    if output is not None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        if markdown is not None and not as_json:
+            output.write_text(markdown, encoding="utf-8")
+        else:
+            output.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    if as_json:
+        console.print_json(json.dumps(payload))
+    elif markdown is not None:
+        console.print(markdown)
+    else:
+        console.print_json(json.dumps(payload))
+
+
 @click.group()
 @click.option(
     "--verbose", "-v", is_flag=True, help="Enable debug logging output."
@@ -85,6 +160,372 @@ def cli(verbose: bool) -> None:
     # Note: Using rich for CLI outputs, keeping basicConfig simple
     if verbose:
         logger.debug("Debug logging enabled")
+
+
+@cli.group("platforms")
+def platforms_group() -> None:
+    """List built-in creator platform presets."""
+
+
+@cli.group("providers")
+def providers_group() -> None:
+    """List available AI video generation providers."""
+
+
+@providers_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def providers_list(as_json: bool) -> None:
+    """List generation providers available to the CLI."""
+    providers = list_provider_names()
+    if as_json:
+        console.print_json(json.dumps({"providers": providers}))
+        return
+
+    table = Table(title="Providers")
+    table.add_column("Name", style="cyan")
+    table.add_column("Type", style="green")
+    for provider in providers:
+        provider_type = "built-in mock" if provider == "mock" else "external"
+        table.add_row(provider, provider_type)
+    console.print(table)
+
+
+@platforms_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def platforms_list(as_json: bool) -> None:
+    """List available publishing surfaces."""
+    platforms = list_platform_profiles()
+    if as_json:
+        console.print_json(json.dumps([platform.to_dict() for platform in platforms]))
+        return
+
+    table = Table(title="Platforms")
+    table.add_column("Key", style="cyan")
+    table.add_column("Label", style="green")
+    table.add_column("Canvas", style="yellow")
+    table.add_column("Max Dur", style="magenta")
+    table.add_column("Captions", style="blue")
+    for platform in platforms:
+        table.add_row(
+            platform.key,
+            platform.label,
+            f"{platform.width}x{platform.height}",
+            f"{platform.max_duration_seconds:.0f}s",
+            platform.default_caption_style,
+        )
+    console.print(table)
+
+
+@cli.group("recipes")
+def recipes_group() -> None:
+    """List built-in workflow defaults."""
+
+
+@recipes_group.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def recipes_list(as_json: bool) -> None:
+    """List available creator workflow recipes."""
+    recipes = list_workflow_recipes()
+    if as_json:
+        console.print_json(json.dumps([recipe.to_dict() for recipe in recipes]))
+        return
+
+    table = Table(title="Recipes")
+    table.add_column("Key", style="cyan")
+    table.add_column("Platform", style="green")
+    table.add_column("Clips", style="yellow")
+    table.add_column("Clip Range", style="magenta")
+    table.add_column("Description", style="blue")
+    for recipe in recipes:
+        table.add_row(
+            recipe.key,
+            recipe.default_platform,
+            str(recipe.clips),
+            f"{recipe.min_clip_seconds:.0f}-{recipe.max_clip_seconds:.0f}s",
+            recipe.description,
+        )
+    console.print(table)
+
+
+@cli.command("storyboard")
+@click.argument("script_input", required=False)
+@click.option("--script-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="Read script text from a file.")
+@click.option("--text", type=str, default=None, help="Inline script text.")
+@click.option("--platform", "platform_name", type=str, default="tiktok", show_default=True, help="Target platform preset.")
+@click.option("--provider", type=str, default="generic", show_default=True, help="Target AI video provider label.")
+@click.option("--hook-style", type=click.Choice(["curiosity", "authority", "explainer"]), default="curiosity", show_default=True)
+@click.option("--shots", type=int, default=None, help="Maximum number of shots to emit.")
+@click.option("--shot-seconds", type=float, default=None, help="Force each shot duration.")
+@click.option("--output", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Write JSON plan to a file.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def storyboard_cmd(
+    script_input: str | None,
+    script_file: Path | None,
+    text: str | None,
+    platform_name: str,
+    provider: str,
+    hook_style: str,
+    shots: int | None,
+    shot_seconds: float | None,
+    output: Path | None,
+    as_json: bool,
+) -> None:
+    """Turn a script into AI-video-ready shot prompts."""
+    try:
+        script_text = resolve_script_text(script_input=script_input, script_file=script_file, text=text)
+        storyboard = build_storyboard(
+            script_text,
+            platform_name=platform_name,
+            provider=provider,
+            hook_style=hook_style,
+            shots=shots,
+            shot_seconds=shot_seconds,
+        )
+        _emit_payload(storyboard.to_dict(), as_json=as_json, output=output)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("package")
+@click.argument("source_name")
+@click.option("--platform", "platform_name", type=str, default="tiktok", show_default=True, help="Target platform preset.")
+@click.option("--script-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="Read script text from a file.")
+@click.option("--text", type=str, default=None, help="Inline script text.")
+@click.option("--format", "output_format", type=click.Choice(["json", "markdown"]), default="json", show_default=True)
+@click.option("--output", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Write bundle to a file.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def package_cmd(
+    source_name: str,
+    platform_name: str,
+    script_file: Path | None,
+    text: str | None,
+    output_format: str,
+    output: Path | None,
+    as_json: bool,
+) -> None:
+    """Create a publish-ready metadata bundle for creator outputs."""
+    try:
+        script_text = None
+        if script_file or text:
+            script_text = resolve_script_text(script_file=script_file, text=text)
+        bundle = build_publish_bundle(
+            platform_name=platform_name,
+            source_name=source_name,
+            script_text=script_text,
+        )
+        markdown = bundle_to_markdown(bundle) if output_format == "markdown" and not as_json else None
+        _emit_payload(bundle.to_dict(), as_json=as_json, output=output, markdown=markdown)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("generate")
+@click.argument("script_input", required=False)
+@click.option("--storyboard", "storyboard_path", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="Submit an existing storyboard JSON file.")
+@click.option("--script-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="Read script text from a file.")
+@click.option("--text", type=str, default=None, help="Inline script text.")
+@click.option("--platform", "platform_name", type=str, default="tiktok", show_default=True, help="Target platform preset.")
+@click.option("--provider", type=str, default="mock", show_default=True, help="Generation provider.")
+@click.option("--hook-style", type=click.Choice(["curiosity", "authority", "explainer"]), default="curiosity", show_default=True)
+@click.option("--shots", type=int, default=None, help="Maximum number of storyboard shots.")
+@click.option("--shot-seconds", type=float, default=None, help="Force each shot duration.")
+@click.option("--queue-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Generation queue directory.")
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Fetched asset output directory.")
+@click.option("--wait", "wait_for_completion", is_flag=True, help="Wait for provider completion before returning.")
+@click.option("--fetch", "fetch_outputs", is_flag=True, help="Fetch generated assets after submission.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def generate_cmd(
+    script_input: str | None,
+    storyboard_path: Path | None,
+    script_file: Path | None,
+    text: str | None,
+    platform_name: str,
+    provider: str,
+    hook_style: str,
+    shots: int | None,
+    shot_seconds: float | None,
+    queue_dir: Path | None,
+    output_dir: Path | None,
+    wait_for_completion: bool,
+    fetch_outputs: bool,
+    as_json: bool,
+) -> None:
+    """Submit AI-video generation jobs from a storyboard or raw script."""
+    try:
+        if storyboard_path:
+            storyboard = load_storyboard(storyboard_path)
+        else:
+            script_text = resolve_script_text(script_input=script_input, script_file=script_file, text=text)
+            storyboard = build_storyboard(
+                script_text,
+                platform_name=platform_name,
+                provider=provider,
+                hook_style=hook_style,
+                shots=shots,
+                shot_seconds=shot_seconds,
+            ).to_dict()
+
+        job = submit_job(storyboard, provider=provider, queue_dir=queue_dir, output_dir=output_dir)
+        if wait_for_completion or fetch_outputs:
+            job = wait_for_job(job["job_id"], queue_dir=queue_dir)
+        if fetch_outputs:
+            job = fetch_job(job["job_id"], queue_dir=queue_dir, output_dir=output_dir)
+
+        _emit_payload(job, as_json=as_json)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.group("queue")
+def queue_group() -> None:
+    """Manage queued AI video generation jobs."""
+
+
+@queue_group.command("submit")
+@click.argument("storyboard_path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--provider", type=str, default="mock", show_default=True, help="Generation provider.")
+@click.option("--queue-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Generation queue directory.")
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Fetched asset output directory.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def queue_submit_cmd(storyboard_path: Path, provider: str, queue_dir: Path | None, output_dir: Path | None, as_json: bool) -> None:
+    """Submit a storyboard JSON file to the generation queue."""
+    try:
+        storyboard = load_storyboard(storyboard_path)
+        job = submit_job(storyboard, provider=provider, queue_dir=queue_dir, output_dir=output_dir)
+        _emit_payload(job, as_json=as_json)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@queue_group.command("list")
+@click.option("--queue-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Generation queue directory.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def queue_list_cmd(queue_dir: Path | None, as_json: bool) -> None:
+    """List generation queue jobs."""
+    try:
+        jobs = list_jobs(queue_dir=queue_dir)
+        if as_json:
+            _emit_payload({"jobs": jobs}, as_json=True)
+            return
+
+        table = Table(title="Generation Jobs")
+        table.add_column("Job ID", style="cyan")
+        table.add_column("Provider", style="green")
+        table.add_column("Status", style="yellow")
+        table.add_column("Created", style="magenta")
+        for job in jobs:
+            table.add_row(job["job_id"], job["provider"], job["status"], job["created_at"])
+        console.print(table)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@queue_group.command("status")
+@click.argument("job_id")
+@click.option("--queue-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Generation queue directory.")
+@click.option("--refresh", "refresh_state", is_flag=True, help="Refresh provider state before showing the job.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def queue_status_cmd(job_id: str, queue_dir: Path | None, refresh_state: bool, as_json: bool) -> None:
+    """Show one generation job."""
+    try:
+        job = get_job(job_id, queue_dir=queue_dir, refresh=refresh_state)
+        _emit_payload(job, as_json=as_json)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@queue_group.command("wait")
+@click.argument("job_id")
+@click.option("--queue-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Generation queue directory.")
+@click.option("--timeout", "timeout_seconds", type=float, default=30.0, show_default=True, help="Maximum wait time in seconds.")
+@click.option("--poll", "poll_seconds", type=float, default=1.0, show_default=True, help="Polling interval in seconds.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def queue_wait_cmd(job_id: str, queue_dir: Path | None, timeout_seconds: float, poll_seconds: float, as_json: bool) -> None:
+    """Wait until a generation job completes."""
+    try:
+        job = wait_for_job(job_id, queue_dir=queue_dir, timeout_seconds=timeout_seconds, poll_seconds=poll_seconds)
+        _emit_payload(job, as_json=as_json)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@queue_group.command("fetch")
+@click.argument("job_id")
+@click.option("--queue-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Generation queue directory.")
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None, help="Fetched asset output directory.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def queue_fetch_cmd(job_id: str, queue_dir: Path | None, output_dir: Path | None, as_json: bool) -> None:
+    """Fetch local files for a completed generation job."""
+    try:
+        job = fetch_job(job_id, queue_dir=queue_dir, output_dir=output_dir)
+        _emit_payload(job, as_json=as_json)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.group("agent")
+def agent_group() -> None:
+    """Agent-framework-friendly declarative workflows."""
+
+
+@agent_group.command("template")
+@click.argument("workflow", type=click.Choice(["viralize", "storyboard", "generate", "package", "creator-brief"]), default="viralize")
+@click.option("--output", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Write the template JSON to a file.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def agent_template_cmd(workflow: str, output: Path | None, as_json: bool) -> None:
+    """Emit a starter job spec for agent frameworks."""
+    try:
+        payload = agent_template(workflow)
+        _emit_payload(payload, as_json=True if as_json or output else True, output=output)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@agent_group.command("run")
+@click.argument("spec_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--dry-run", is_flag=True, help="Force planning-only execution.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def agent_run_cmd(spec_file: Path, dry_run: bool, as_json: bool) -> None:
+    """Run a declarative creator workflow spec."""
+    try:
+        spec = json.loads(spec_file.read_text(encoding="utf-8"))
+        result = run_agent_job(spec, dry_run_override=True if dry_run else None)
+        _emit_payload(result, as_json=True if as_json or True else False)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.group("creator")
+def creator_group() -> None:
+    """Creator recommendation helpers for agents and workflows."""
+
+
+@creator_group.command("brief")
+@click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--script-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="Read script text from a file.")
+@click.option("--text", type=str, default=None, help="Inline script text.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def creator_brief_cmd(source_file: Path, script_file: Path | None, text: str | None, as_json: bool) -> None:
+    """Recommend the best next creator workflow for an asset."""
+    try:
+        script_text = None
+        if script_file or text:
+            script_text = resolve_script_text(script_file=script_file, text=text)
+        brief = build_creator_brief(source_file, script_text=script_text)
+        _emit_payload(brief.to_dict(), as_json=as_json)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
 
 @cli.command("sources")
 @click.argument("project_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
@@ -110,6 +551,325 @@ def sources_cmd(project_dir: Path, as_json: bool) -> None:
             table.add_row(sid, info.media_type, dur_str, res_str, str(info.file_path))
 
         console.print(table)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("make")
+@click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--platform", "platform_name", type=str, default=None, help="Target platform preset.")
+@click.option("--recipe", "recipe_name", type=str, default=None, help="Optional workflow recipe.")
+@click.option("--captions", type=click.Choice(["off", "clean", "social"]), default=None, help="Caption mode.")
+@click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default="final", show_default=True)
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None)
+@click.option("--remove-silence/--keep-silence", default=None, help="Trim dead air inside the output.")
+@click.option("--silence-min-duration", type=float, default=None, help="Minimum silence duration to cut.")
+@click.option("--dry-run", is_flag=True, help="Plan the output without rendering.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def make_cmd(
+    source_file: Path,
+    platform_name: str | None,
+    recipe_name: str | None,
+    captions: str | None,
+    quality: str,
+    output_dir: Path | None,
+    remove_silence: bool | None,
+    silence_min_duration: float | None,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    """Create one ready-to-post platform-specific output."""
+    try:
+        plan = build_plan(
+            "make",
+            source_file,
+            platform_name=platform_name,
+            recipe_name=recipe_name,
+            captions=captions,
+            quality=quality,
+            output_dir=output_dir,
+            remove_silence=remove_silence,
+            silence_min_duration=silence_min_duration,
+        )
+        _print_factory_plan(plan, as_json)
+        if dry_run:
+            return
+        rendered = execute_plan(plan)
+        for path in rendered:
+            console.print(f"[bold green]Created:[/bold green] {path}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("repurpose")
+@click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--platform", "platform_name", type=str, default=None, help="Target platform preset.")
+@click.option("--recipe", "recipe_name", type=str, default=None, help="Optional workflow recipe.")
+@click.option("--captions", type=click.Choice(["off", "clean", "social"]), default=None, help="Caption mode.")
+@click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default="final", show_default=True)
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None)
+@click.option("--clips", type=int, default=None, help="Number of output clips to target.")
+@click.option("--min-clip", "min_clip_seconds", type=float, default=None, help="Minimum clip duration.")
+@click.option("--max-clip", "max_clip_seconds", type=float, default=None, help="Maximum clip duration.")
+@click.option("--scene-threshold", type=float, default=None, help="Scene detection sensitivity.")
+@click.option("--remove-silence/--keep-silence", default=None, help="Trim dead air inside selected clips.")
+@click.option("--silence-min-duration", type=float, default=None, help="Minimum silence duration to cut.")
+@click.option("--dry-run", is_flag=True, help="Plan the outputs without rendering.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def repurpose_cmd(
+    source_file: Path,
+    platform_name: str | None,
+    recipe_name: str | None,
+    captions: str | None,
+    quality: str,
+    output_dir: Path | None,
+    clips: int | None,
+    min_clip_seconds: float | None,
+    max_clip_seconds: float | None,
+    scene_threshold: float | None,
+    remove_silence: bool | None,
+    silence_min_duration: float | None,
+    dry_run: bool,
+    as_json: bool,
+) -> None:
+    """Turn one long video into multiple short-form clips."""
+    try:
+        plan = build_plan(
+            "repurpose",
+            source_file,
+            platform_name=platform_name,
+            recipe_name=recipe_name,
+            captions=captions,
+            quality=quality,
+            output_dir=output_dir,
+            remove_silence=remove_silence,
+            silence_min_duration=silence_min_duration,
+            clips=clips,
+            min_clip_seconds=min_clip_seconds,
+            max_clip_seconds=max_clip_seconds,
+            scene_threshold=scene_threshold,
+        )
+        _print_factory_plan(plan, as_json)
+        if dry_run:
+            return
+        rendered = execute_plan(plan)
+        for path in rendered:
+            console.print(f"[bold green]Created:[/bold green] {path}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("preview")
+@click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--mode", type=click.Choice(["make", "repurpose"]), default="repurpose", show_default=True)
+@click.option("--platform", "platform_name", type=str, default=None, help="Target platform preset.")
+@click.option("--recipe", "recipe_name", type=str, default=None, help="Optional workflow recipe.")
+@click.option("--captions", type=click.Choice(["off", "clean", "social"]), default=None, help="Caption mode.")
+@click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default="final", show_default=True)
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None)
+@click.option("--clips", type=int, default=None, help="Number of output clips to target.")
+@click.option("--min-clip", "min_clip_seconds", type=float, default=None, help="Minimum clip duration.")
+@click.option("--max-clip", "max_clip_seconds", type=float, default=None, help="Maximum clip duration.")
+@click.option("--scene-threshold", type=float, default=None, help="Scene detection sensitivity.")
+@click.option("--remove-silence/--keep-silence", default=None, help="Trim dead air inside selected clips.")
+@click.option("--silence-min-duration", type=float, default=None, help="Minimum silence duration to cut.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def preview_cmd(
+    source_file: Path,
+    mode: str,
+    platform_name: str | None,
+    recipe_name: str | None,
+    captions: str | None,
+    quality: str,
+    output_dir: Path | None,
+    clips: int | None,
+    min_clip_seconds: float | None,
+    max_clip_seconds: float | None,
+    scene_threshold: float | None,
+    remove_silence: bool | None,
+    silence_min_duration: float | None,
+    as_json: bool,
+) -> None:
+    """Show the editing plan before rendering."""
+    try:
+        plan = build_plan(
+            mode,
+            source_file,
+            platform_name=platform_name,
+            recipe_name=recipe_name,
+            captions=captions,
+            quality=quality,
+            output_dir=output_dir,
+            remove_silence=remove_silence,
+            silence_min_duration=silence_min_duration,
+            clips=clips,
+            min_clip_seconds=min_clip_seconds,
+            max_clip_seconds=max_clip_seconds,
+            scene_threshold=scene_threshold,
+        )
+        _print_factory_plan(plan, as_json)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("batch")
+@click.argument("input_dir", type=click.Path(exists=True, file_okay=False, dir_okay=True, path_type=Path))
+@click.option("--mode", type=click.Choice(["make", "repurpose"]), default="repurpose", show_default=True)
+@click.option("--platform", "platform_name", type=str, default=None, help="Target platform preset.")
+@click.option("--recipe", "recipe_name", type=str, default=None, help="Optional workflow recipe.")
+@click.option("--captions", type=click.Choice(["off", "clean", "social"]), default=None, help="Caption mode.")
+@click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default="final", show_default=True)
+@click.option("--glob", "glob_pattern", type=str, default="*.mp4", show_default=True, help="Input glob.")
+@click.option("--limit", type=int, default=None, help="Maximum number of source files to process.")
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None)
+@click.option("--clips", type=int, default=None, help="Number of output clips to target.")
+@click.option("--min-clip", "min_clip_seconds", type=float, default=None, help="Minimum clip duration.")
+@click.option("--max-clip", "max_clip_seconds", type=float, default=None, help="Maximum clip duration.")
+@click.option("--scene-threshold", type=float, default=None, help="Scene detection sensitivity.")
+@click.option("--remove-silence/--keep-silence", default=None, help="Trim dead air inside selected clips.")
+@click.option("--silence-min-duration", type=float, default=None, help="Minimum silence duration to cut.")
+@click.option("--dry-run", is_flag=True, help="Plan outputs without rendering.")
+def batch_cmd(
+    input_dir: Path,
+    mode: str,
+    platform_name: str | None,
+    recipe_name: str | None,
+    captions: str | None,
+    quality: str,
+    glob_pattern: str,
+    limit: int | None,
+    output_dir: Path | None,
+    clips: int | None,
+    min_clip_seconds: float | None,
+    max_clip_seconds: float | None,
+    scene_threshold: float | None,
+    remove_silence: bool | None,
+    silence_min_duration: float | None,
+    dry_run: bool,
+) -> None:
+    """Apply the same factory workflow across a folder of source videos."""
+    try:
+        files = sorted(input_dir.glob(glob_pattern))
+        if limit is not None:
+            files = files[:limit]
+        if not files:
+            console.print("[yellow]No matching files found.[/yellow]")
+            return
+
+        rendered_total = 0
+        for source_file in files:
+            if not source_file.is_file():
+                continue
+            plan = build_plan(
+                mode,
+                source_file,
+                platform_name=platform_name,
+                recipe_name=recipe_name,
+                captions=captions,
+                quality=quality,
+                output_dir=output_dir,
+                remove_silence=remove_silence,
+                silence_min_duration=silence_min_duration,
+                clips=clips,
+                min_clip_seconds=min_clip_seconds,
+                max_clip_seconds=max_clip_seconds,
+                scene_threshold=scene_threshold,
+            )
+            console.print(f"\n[bold cyan]{source_file.name}[/bold cyan]")
+            _print_factory_plan(plan, as_json=False)
+            if not dry_run:
+                rendered_total += len(execute_plan(plan))
+
+        if dry_run:
+            console.print(f"[bold green]Planned {len(files)} source file(s).[/bold green]")
+        else:
+            console.print(f"[bold green]Created {rendered_total} output file(s).[/bold green]")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+@cli.command("viralize")
+@click.argument("source_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--platform", "platform_name", type=str, default=None, help="Target platform preset.")
+@click.option("--recipe", "recipe_name", type=str, default="podcast", show_default=True, help="Workflow recipe.")
+@click.option("--captions", type=click.Choice(["off", "clean", "social"]), default=None, help="Caption mode.")
+@click.option("--quality", type=click.Choice(["draft", "preview", "final"]), default="final", show_default=True)
+@click.option("--output-dir", type=click.Path(file_okay=False, dir_okay=True, path_type=Path), default=None)
+@click.option("--clips", type=int, default=None, help="Number of output clips to target.")
+@click.option("--min-clip", "min_clip_seconds", type=float, default=None, help="Minimum clip duration.")
+@click.option("--max-clip", "max_clip_seconds", type=float, default=None, help="Maximum clip duration.")
+@click.option("--scene-threshold", type=float, default=None, help="Scene detection sensitivity.")
+@click.option("--remove-silence/--keep-silence", default=None, help="Trim dead air inside selected clips.")
+@click.option("--silence-min-duration", type=float, default=None, help="Minimum silence duration to cut.")
+@click.option("--script-file", type=click.Path(exists=True, dir_okay=False, path_type=Path), default=None, help="Read script text from a file.")
+@click.option("--text", type=str, default=None, help="Inline script text.")
+@click.option("--render/--dry-run", default=False, help="Render outputs instead of planning only.")
+@click.option("--package-output", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Write bundle JSON or Markdown to a file.")
+@click.option("--format", "output_format", type=click.Choice(["json", "markdown"]), default="json", show_default=True)
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON.")
+def viralize_cmd(
+    source_file: Path,
+    platform_name: str | None,
+    recipe_name: str | None,
+    captions: str | None,
+    quality: str,
+    output_dir: Path | None,
+    clips: int | None,
+    min_clip_seconds: float | None,
+    max_clip_seconds: float | None,
+    scene_threshold: float | None,
+    remove_silence: bool | None,
+    silence_min_duration: float | None,
+    script_file: Path | None,
+    text: str | None,
+    render: bool,
+    package_output: Path | None,
+    output_format: str,
+    as_json: bool,
+) -> None:
+    """Plan or render a full short-form content bundle from one source."""
+    try:
+        script_text = None
+        if script_file or text:
+            script_text = resolve_script_text(script_file=script_file, text=text)
+
+        plan, bundle, rendered_paths = viralize(
+            source_file,
+            platform_name=platform_name,
+            recipe_name=recipe_name,
+            captions=captions,
+            quality=quality,
+            output_dir=output_dir,
+            remove_silence=remove_silence,
+            silence_min_duration=silence_min_duration,
+            clips=clips,
+            min_clip_seconds=min_clip_seconds,
+            max_clip_seconds=max_clip_seconds,
+            scene_threshold=scene_threshold,
+            script_text=script_text,
+            render=render,
+        )
+
+        if as_json:
+            payload = {
+                "plan": plan.to_dict(),
+                "package": bundle.to_dict(),
+                "rendered_paths": [str(path) for path in rendered_paths],
+            }
+            _emit_payload(payload, as_json=True, output=package_output)
+            return
+
+        _print_factory_plan(plan, as_json=False)
+        markdown = bundle_to_markdown(bundle) if output_format == "markdown" else None
+        _emit_payload(bundle.to_dict(), as_json=False, output=package_output, markdown=markdown)
+        if render:
+            for path in rendered_paths:
+                console.print(f"[bold green]Created:[/bold green] {path}")
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise click.Abort()
