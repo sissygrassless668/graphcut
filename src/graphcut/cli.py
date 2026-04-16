@@ -17,6 +17,7 @@ from graphcut.agent_workflows import (
     viralize,
 )
 from graphcut.agent_runner import agent_template, build_creator_brief, run_agent_job
+from graphcut.compare_sbs import run_compare_sbs
 from graphcut.factory import build_plan, execute_plan
 from graphcut.generation_queue import (
     fetch_job,
@@ -870,6 +871,116 @@ def viralize_cmd(
         if render:
             for path in rendered_paths:
                 console.print(f"[bold green]Created:[/bold green] {path}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise click.Abort()
+
+
+
+@cli.command("compare-sbs")
+@click.argument("source_file", type=click.Path(dir_okay=False, path_type=Path), required=False, default=None)
+@click.option("--pairs", "pairs_manifest", type=click.Path(exists=True, dir_okay=False, path_type=Path), required=True, help="YAML file describing before/after clip pairs.")
+@click.option("--output", type=click.Path(dir_okay=False, path_type=Path), default=None, help="Destination video file.")
+@click.option("--layout", type=click.Choice(["horizontal", "vertical"]), default="horizontal", show_default=True, help="Side-by-side orientation.")
+@click.option("--freeze-shorter", "freeze_mode", type=click.Choice(["last-frame", "black", "loop", "none"]), default="last-frame", show_default=True, help="What to do when one side is shorter.")
+@click.option("--audio-mode", type=click.Choice(["mute", "before", "after", "mix"]), default="mute", show_default=True, help="Audio from before, after, mixed, or muted.")
+@click.option("--mute", "force_mute", is_flag=True, default=False, help="Shorthand: mute all audio (same as --audio-mode mute).")
+@click.option("--platform", "platform_name", type=str, default=None, help="Platform preset for canvas sizing (optional).")
+@click.option("--canvas-width", type=int, default=1920, show_default=True, help="Output canvas width in pixels.")
+@click.option("--canvas-height", type=int, default=1080, show_default=True, help="Output canvas height in pixels.")
+@click.option("--report-format", type=click.Choice(["markdown", "csv", "none"]), default="none", show_default=True, help="Emit a coverage report.")
+@click.option("--json", "as_json", is_flag=True, help="Emit machine-readable JSON result.")
+def compare_sbs_cmd(
+    source_file: Path | None,
+    pairs_manifest: Path,
+    output: Path | None,
+    layout: str,
+    freeze_mode: str,
+    audio_mode: str,
+    force_mute: bool,
+    platform_name: str | None,
+    canvas_width: int,
+    canvas_height: int,
+    report_format: str,
+    as_json: bool,
+) -> None:
+    """Build a side-by-side before/after comparison reel from a pairs manifest.
+
+    Extracts paired subclips, composites them side-by-side (or top/bottom),
+    freezes the shorter side, and concatenates all pairs into one video.
+
+    \b
+    Examples:
+      graphcut compare-sbs source.mp4 --pairs pairs.yaml --output comparison.mp4
+      graphcut compare-sbs --pairs pairs.yaml --output out.mp4 --layout vertical --freeze-shorter black
+      graphcut compare-sbs source.mp4 --pairs pairs.yaml --mute --report-format markdown --json
+    """
+    try:
+        effective_audio = "mute" if force_mute else audio_mode
+
+        if source_file is not None and not source_file.exists():
+            raise click.BadParameter(f"Source file not found: {source_file}", param_hint="source_file")
+
+        out_path = output or Path("comparison.mp4")
+
+        result = run_compare_sbs(
+            primary_source=source_file,
+            pairs_manifest=pairs_manifest,
+            output=out_path,
+            layout=layout,  # type: ignore[arg-type]
+            freeze_mode=freeze_mode,  # type: ignore[arg-type]
+            audio_mode=effective_audio,  # type: ignore[arg-type]
+            platform_name=platform_name,
+            canvas_w=canvas_width,
+            canvas_h=canvas_height,
+        )
+
+        payload = result.to_dict()
+
+        if as_json:
+            console.print_json(json.dumps(payload))
+        else:
+            # Human-readable summary table
+            table = Table(title="compare-sbs — Pair Summary")
+            table.add_column("Pair ID", style="cyan")
+            table.add_column("Title", style="white")
+            table.add_column("Before (s)", style="green", justify="right")
+            table.add_column("After (s)", style="blue", justify="right")
+            table.add_column("Output (s)", style="yellow", justify="right")
+            table.add_column("Freeze side", style="magenta")
+            table.add_column("Freeze (s)", style="dim", justify="right")
+
+            for p in result.pairs:
+                table.add_row(
+                    p.id,
+                    p.title,
+                    f"{p.before_duration:.1f}",
+                    f"{p.after_duration:.1f}",
+                    f"{p.output_duration:.1f}",
+                    p.freeze.side,
+                    f"{p.freeze.duration:.1f}",
+                )
+
+            console.print(table)
+            console.print(
+                f"[bold green]Output:[/bold green] {out_path}  "
+                f"[bold]Total:[/bold] {result.total_output_duration:.1f}s"
+            )
+
+            for w in result.warnings:
+                console.print(f"[yellow]Warning:[/yellow] {w}")
+
+        if report_format == "markdown":
+            console.print(result.to_markdown_table())
+        elif report_format == "csv":
+            lines = ["pair_id,title,before_s,after_s,output_s,freeze_side,freeze_s"]
+            for p in result.pairs:
+                lines.append(
+                    f"{p.id},{p.title},{p.before_duration:.3f},{p.after_duration:.3f},"
+                    f"{p.output_duration:.3f},{p.freeze.side},{p.freeze.duration:.3f}"
+                )
+            console.print("\n".join(lines))
+
     except Exception as e:
         console.print(f"[bold red]Error:[/bold red] {e}")
         raise click.Abort()
